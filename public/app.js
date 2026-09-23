@@ -203,7 +203,10 @@ function onLoginSuccess(user, token, showGreeting = false) {
   localStorage.setItem('auth_token', token);
 
   const overlay = document.getElementById('loginOverlay');
-  if (overlay) overlay.classList.add('hidden');
+  if (overlay) {
+    overlay.classList.add('hidden');
+    overlay.style.display = 'none';
+  }
 
   applyUserRolePermissions(user);
   loadInitialData();
@@ -234,7 +237,10 @@ function handleUnauthorized() {
   localStorage.removeItem('auth_token');
 
   const overlay = document.getElementById('loginOverlay');
-  if (overlay) overlay.classList.remove('hidden');
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    overlay.style.display = 'flex';
+  }
 
   const form = document.getElementById('loginForm');
   if (form) form.reset();
@@ -2572,6 +2578,8 @@ async function deleteSupplier(id, name) {
   } catch (err) {
     showToast(err.message, 'error');
   }
+}
+
 // --- 15.6 Sao Lưu & Khôi Phục Dữ Liệu (Backup & Restore) ---
 async function loadBackupInfo() {
   const sizeEl = document.getElementById('backupDbSize');

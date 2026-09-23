@@ -113,3 +113,9 @@ body {
     border: 2px dashed #000000 !important;
   }
 }
+
+/* Đảm bảo class hidden luôn có độ ưu tiên cao nhất, không bị flex ghi đè */
+.hidden, #loginOverlay.hidden {
+  display: none !important;
+}
+
