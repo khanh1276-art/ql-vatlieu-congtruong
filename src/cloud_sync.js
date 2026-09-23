@@ -12,21 +12,39 @@ function isCloudConfigured() {
 
 function getCloudClient() {
   if (!libsqlClient && isCloudConfigured()) {
+    let createClient;
     try {
-      const { createClient } = require('@libsql/client');
-      let url = (process.env.TURSO_DATABASE_URL || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
-      if (url.startsWith('libsql://')) {
-        url = url.replace('libsql://', 'https://');
-      }
-      const token = (process.env.TURSO_AUTH_TOKEN || '').trim().replace(/^["']|["']$/g, '');
-      libsqlClient = createClient({
-        url: url,
-        authToken: token
-      });
-      isCloudActive = true;
+      createClient = require('@libsql/client').createClient;
     } catch (err) {
-      console.error('⚠️ Không thể khởi tạo kết nối Cloud Turso:', err.message);
-      isCloudActive = false;
+      if (err.code === 'MODULE_NOT_FOUND') {
+        console.log('📦 Phát hiện thiếu thư viện @libsql/client. Đang tự động tải về...');
+        try {
+          const { execSync } = require('node:child_process');
+          execSync('npm install --no-save @libsql/client', { stdio: 'inherit' });
+          createClient = require('@libsql/client').createClient;
+          console.log('✓ Tự động cài đặt @libsql/client thành công!');
+        } catch (installErr) {
+          console.error('⚠️ Không thể tự động cài đặt @libsql/client:', installErr.message);
+        }
+      }
+    }
+
+    if (createClient) {
+      try {
+        let url = (process.env.TURSO_DATABASE_URL || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
+        if (url.startsWith('libsql://')) {
+          url = url.replace('libsql://', 'https://');
+        }
+        const token = (process.env.TURSO_AUTH_TOKEN || '').trim().replace(/^["']|["']$/g, '');
+        libsqlClient = createClient({
+          url: url,
+          authToken: token
+        });
+        isCloudActive = true;
+      } catch (err) {
+        console.error('⚠️ Không thể khởi tạo kết nối Cloud Turso:', err.message);
+        isCloudActive = false;
+      }
     }
   }
   return libsqlClient;
