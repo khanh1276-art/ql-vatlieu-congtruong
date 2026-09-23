@@ -5,22 +5,23 @@ let libsqlClient = null;
 let isCloudActive = false;
 
 function isCloudConfigured() {
-  const url = process.env.TURSO_DATABASE_URL;
-  const token = process.env.TURSO_AUTH_TOKEN;
-  return Boolean(url && url.trim() && token && token.trim());
+  const url = (process.env.TURSO_DATABASE_URL || '').trim().replace(/^["']|["']$/g, '');
+  const token = (process.env.TURSO_AUTH_TOKEN || '').trim().replace(/^["']|["']$/g, '');
+  return Boolean(url && token);
 }
 
 function getCloudClient() {
   if (!libsqlClient && isCloudConfigured()) {
     try {
       const { createClient } = require('@libsql/client');
-      let url = process.env.TURSO_DATABASE_URL.trim();
+      let url = (process.env.TURSO_DATABASE_URL || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
       if (url.startsWith('libsql://')) {
         url = url.replace('libsql://', 'https://');
       }
+      const token = (process.env.TURSO_AUTH_TOKEN || '').trim().replace(/^["']|["']$/g, '');
       libsqlClient = createClient({
         url: url,
-        authToken: process.env.TURSO_AUTH_TOKEN.trim()
+        authToken: token
       });
       isCloudActive = true;
     } catch (err) {
@@ -29,6 +30,14 @@ function getCloudClient() {
     }
   }
   return libsqlClient;
+}
+
+// Tiện ích bọc Promise kèm Timeout để không bao giờ làm treo tiến trình
+function withTimeout(promise, ms, opName = 'Thao tác') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${opName} quá thời gian chờ (${ms}ms)`)), ms))
+  ]);
 }
 
 // Khởi tạo bảng trên Cloud và đồng bộ dữ liệu ban đầu
@@ -44,8 +53,8 @@ async function initCloudDatabase(localDb) {
   console.log('🔄 Đang kết nối tới Cloud Database (Turso)...');
 
   try {
-    // 1. Tạo các bảng trên Turso nếu chưa có
-    await client.batch([
+    // 1. Tạo các bảng trên Turso nếu chưa có (kèm timeout 15s)
+    await withTimeout(client.batch([
       `CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT UNIQUE NOT NULL,
@@ -129,10 +138,14 @@ async function initCloudDatabase(localDb) {
         notes TEXT,
         created_at TEXT DEFAULT (datetime('now', 'localtime'))
       )`
-    ], 'write');
+    ], 'write'), 15000, 'Tạo bảng trên Turso');
 
     // 2. Kiểm tra xem Cloud đã có dữ liệu chưa
-    const checkProjects = await client.execute('SELECT COUNT(*) as count FROM projects');
+    const checkProjects = await withTimeout(
+      client.execute('SELECT COUNT(*) as count FROM projects'),
+      10000,
+      'Kiểm tra dữ liệu Cloud'
+    );
     const cloudCount = Number(checkProjects.rows[0]?.count || 0);
 
     if (cloudCount > 0) {
@@ -142,32 +155,41 @@ async function initCloudDatabase(localDb) {
       localDb.exec('PRAGMA foreign_keys = OFF;');
       localDb.exec('BEGIN TRANSACTION;');
 
-      for (const t of tables) {
-        const rs = await client.execute(`SELECT * FROM ${t}`);
-        if (rs.rows.length > 0) {
-          const keys = Object.keys(rs.rows[0]);
-          const cols = keys.join(', ');
-          const qs = keys.map(() => '?').join(', ');
-          const stmt = localDb.prepare(`INSERT OR REPLACE INTO ${t} (${cols}) VALUES (${qs})`);
-          for (const row of rs.rows) {
-            stmt.run(...keys.map(k => row[k]));
+      localDb.isSyncing = true; // Chặn trigger đồng bộ ngược lại Cloud
+      try {
+        for (const t of tables) {
+          const rs = await withTimeout(client.execute(`SELECT * FROM ${t}`), 10000, `Tải bảng ${t}`);
+          if (rs.rows.length > 0) {
+            const keys = Object.keys(rs.rows[0]);
+            const cols = keys.join(', ');
+            const qs = keys.map(() => '?').join(', ');
+            const stmt = (localDb.originalPrepare || localDb.prepare.bind(localDb))(`INSERT OR REPLACE INTO ${t} (${cols}) VALUES (${qs})`);
+            for (const row of rs.rows) {
+              stmt.run(...keys.map(k => row[k]));
+            }
           }
         }
+        localDb.exec('COMMIT;');
+        console.log('✓ Hoàn tất nạp dữ liệu từ Cloud vào container. Dữ liệu đã sẵn sàng!');
+      } catch (pullErr) {
+        localDb.exec('ROLLBACK;');
+        console.error('⚠️ Lỗi khi nạp dữ liệu từ Cloud:', pullErr.message);
+      } finally {
+        localDb.isSyncing = false;
+        localDb.exec('PRAGMA foreign_keys = ON;');
       }
-
-      localDb.exec('COMMIT;');
-      localDb.exec('PRAGMA foreign_keys = ON;');
-      console.log('✓ Hoàn tất nạp dữ liệu từ Cloud vào container. Dữ liệu đã sẵn sàng!');
     } else {
       console.log('☁️ Cloud Database mới tinh. Đang tải dữ liệu khởi tạo lên Cloud...');
       // Đẩy dữ liệu mẫu từ cục bộ lên Cloud
-      await syncAllLocalToCloud(localDb, client);
+      await withTimeout(syncAllLocalToCloud(localDb, client), 20000, 'Đồng bộ ban đầu lên Cloud');
       console.log('✓ Đã đồng bộ dữ liệu mẫu lên Cloud thành công!');
     }
 
+    isCloudActive = true;
     return { cloud: true, client };
   } catch (err) {
-    console.error('❌ Lỗi khởi tạo Cloud Database:', err);
+    isCloudActive = false;
+    console.error('❌ Lỗi khởi tạo Cloud Database (hệ thống tiếp tục chạy bằng SQLite cục bộ):', err.message);
     return { cloud: false, error: err.message };
   }
 }
@@ -178,7 +200,7 @@ async function syncAllLocalToCloud(localDb, client = getCloudClient()) {
   const tables = ['projects', 'suppliers', 'materials', 'vehicles', 'users', 'tickets'];
 
   for (const t of tables) {
-    const rows = localDb.prepare(`SELECT * FROM ${t}`).all();
+    const rows = (localDb.originalPrepare || localDb.prepare.bind(localDb))(`SELECT * FROM ${t}`).all();
     if (rows.length === 0) continue;
 
     const queries = rows.map(r => {

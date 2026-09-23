@@ -20,8 +20,11 @@ db.exec(`
   PRAGMA foreign_keys = ON;
 `);
 
-// Tự động đồng bộ các lệnh ghi (INSERT/UPDATE/DELETE) lên Cloud Database (Turso) nếu được cấu hình
 const originalPrepare = db.prepare.bind(db);
+db.isSyncing = false;
+db.originalPrepare = originalPrepare;
+
+// Tự động đồng bộ các lệnh ghi (INSERT/UPDATE/DELETE) lên Cloud Database (Turso) nếu được cấu hình
 db.prepare = function(sql) {
   const stmt = originalPrepare(sql);
   const trimmed = sql.trim().toUpperCase();
@@ -31,10 +34,13 @@ db.prepare = function(sql) {
     const originalRun = stmt.run.bind(stmt);
     stmt.run = function(...args) {
       const result = originalRun(...args);
-      try {
-        const { executeCloudSql } = require('./cloud_sync.js');
-        executeCloudSql(sql, args);
-      } catch (e) {}
+      // Không đồng bộ ngược lại Cloud nếu đang trong tiến trình kéo dữ liệu từ Cloud về
+      if (!db.isSyncing) {
+        try {
+          const { executeCloudSql } = require('./cloud_sync.js');
+          executeCloudSql(sql, args);
+        } catch (e) {}
+      }
       return result;
     };
   }
