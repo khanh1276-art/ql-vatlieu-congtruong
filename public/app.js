@@ -27,9 +27,13 @@ async function apiFetch(url, options = {}) {
     headers['Authorization'] = `Bearer ${AppState.token}`;
   }
   const res = await fetch(url, { ...options, headers });
-  if (res.status === 401) {
-    handleUnauthorized();
-    throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
+  if (!res.ok) {
+    if (res.status === 401) {
+      handleUnauthorized();
+      throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
+    }
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `Yêu cầu thất bại (Mã lỗi: ${res.status})`);
   }
   return res;
 }
@@ -364,19 +368,33 @@ function populateProjectDropdowns() {
   const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
 
   const headerSel = document.getElementById('headerProjectSelect');
+  const dashSel = document.getElementById('dashProjectSelect');
   const checkinSel = document.getElementById('checkin_project');
   const dailySel = document.getElementById('dailyProjectFilter');
   const cumSel = document.getElementById('cumProjectFilter');
   const vehSel = document.getElementById('veh_project');
   const usrProjSel = document.getElementById('usr_project');
 
+  const projs = Array.isArray(AppState.projects) ? AppState.projects : [];
+
   const optionsFilter = '<option value="">-- Tất cả dự án --</option>' +
-    AppState.projects.map(p => `<option value="${p.id}" ${AppState.selectedProjectId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+    projs.map(p => `<option value="${p.id}" ${AppState.selectedProjectId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
 
   const optionsRequired = '<option value="">-- Chọn dự án tiếp nhận --</option>' +
-    AppState.projects.map(p => `<option value="${p.id}" ${AppState.selectedProjectId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+    projs.map(p => `<option value="${p.id}" ${AppState.selectedProjectId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
 
   if (headerSel) headerSel.innerHTML = optionsFilter;
+  if (dashSel) {
+    dashSel.innerHTML = optionsFilter;
+    if (!isAdmin && AppState.currentUser?.project_id) {
+      dashSel.value = AppState.currentUser.project_id;
+      dashSel.disabled = true;
+    } else {
+      dashSel.disabled = false;
+      dashSel.value = AppState.selectedProjectId || '';
+    }
+  }
+
   if (dailySel) {
     dailySel.innerHTML = optionsFilter;
     if (!isAdmin && AppState.currentUser?.project_id) {
@@ -395,14 +413,14 @@ function populateProjectDropdowns() {
       cumSel.disabled = false;
     }
   }
-  if (vehSel) vehSel.innerHTML = '<option value="">-- Chọn dự án thường trực --</option>' + AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
-  if (usrProjSel) usrProjSel.innerHTML = '<option value="">-- Chọn dự án phân công --</option>' + AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  if (vehSel) vehSel.innerHTML = '<option value="">-- Chọn dự án thường trực --</option>' + projs.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  if (usrProjSel) usrProjSel.innerHTML = '<option value="">-- Chọn dự án phân công --</option>' + projs.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
   const userFilterSel = document.getElementById('userFilterProject');
   if (userFilterSel) {
     const curVal = userFilterSel.value;
     userFilterSel.innerHTML = '<option value="">-- Tất cả dự án --</option>' +
-      AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+      projs.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     if (curVal) userFilterSel.value = curVal;
   }
 
@@ -422,7 +440,10 @@ function handleHeaderProjectChange() {
   const sel = document.getElementById('headerProjectSelect');
   AppState.selectedProjectId = sel ? sel.value : '';
 
-  // Đồng bộ sang form checkin và bộ lọc báo cáo
+  // Đồng bộ sang form checkin, dashboard và bộ lọc báo cáo
+  const dashSel = document.getElementById('dashProjectSelect');
+  if (dashSel && !dashSel.disabled) dashSel.value = AppState.selectedProjectId;
+
   const checkinSel = document.getElementById('checkin_project');
   if (checkinSel && AppState.selectedProjectId && !checkinSel.disabled) {
     checkinSel.value = AppState.selectedProjectId;
@@ -444,6 +465,23 @@ function handleHeaderProjectChange() {
   } else if (AppState.currentTab === 'cumulative') {
     loadCumulativeReport();
   }
+}
+
+function handleDashProjectChange(val) {
+  AppState.selectedProjectId = val || '';
+  const headerSel = document.getElementById('headerProjectSelect');
+  if (headerSel) headerSel.value = AppState.selectedProjectId;
+
+  const checkinSel = document.getElementById('checkin_project');
+  if (checkinSel && !checkinSel.disabled) checkinSel.value = AppState.selectedProjectId;
+
+  const dailySel = document.getElementById('dailyProjectFilter');
+  if (dailySel && !dailySel.disabled) dailySel.value = AppState.selectedProjectId;
+
+  const cumSel = document.getElementById('cumProjectFilter');
+  if (cumSel && !cumSel.disabled) cumSel.value = AppState.selectedProjectId;
+
+  loadDashboardStats();
 }
 
 // ============================================================================
@@ -1085,15 +1123,19 @@ async function submitCheckOut() {
 // ============================================================================
 async function loadDashboardStats() {
   try {
-    let url = '/api/dashboard';
+    let url = `/api/dashboard?date=${getTodayDateStr()}`;
     if (AppState.selectedProjectId) {
-      url += `?projectId=${AppState.selectedProjectId}`;
+      url += `&projectId=${AppState.selectedProjectId}`;
     }
     const res = await apiFetch(url);
-    if (!res.ok) return;
-
     const data = await res.json();
     const stats = data.stats || {};
+
+    // Cập nhật badge phạm vi dự án
+    const badgeEl = document.getElementById('dashProjectBadge');
+    if (badgeEl) {
+      badgeEl.textContent = data.projectName || (AppState.selectedProjectId ? 'Dự án đã chọn' : 'Toàn bộ 3 dự án');
+    }
 
     const dashTrips = document.getElementById('dashTotalTrips');
     if (dashTrips) dashTrips.textContent = stats.total_trips || 0;
@@ -1119,6 +1161,16 @@ async function loadDashboardStats() {
       }
     }
 
+    // Hiển thị lũy kế toàn thời gian theo ĐVT
+    const cumBox = document.getElementById('dashCumVolumeBox');
+    if (cumBox) {
+      if (!data.cumulativeVolumeByUnit || data.cumulativeVolumeByUnit.length === 0) {
+        cumBox.textContent = '0';
+      } else {
+        cumBox.textContent = data.cumulativeVolumeByUnit.map(v => `${v.total_volume} ${v.unit}`).join(' • ');
+      }
+    }
+
     // Bảng cơ cấu vật liệu nhập hôm nay
     const matTbody = document.getElementById('dashMaterialBreakdownTable');
     if (matTbody) {
@@ -1133,6 +1185,41 @@ async function loadDashboardStats() {
             <td class="px-3 py-2 text-right font-mono font-bold text-emerald-700">${Number(m.volume).toFixed(2)}</td>
           </tr>
         `).join('');
+      }
+    }
+
+    // Bảng 10 lượt xe vào / ra gần nhất
+    const recentTbody = document.getElementById('dashRecentTicketsTable');
+    if (recentTbody) {
+      const recents = data.recentTickets || [];
+      if (recents.length === 0) {
+        recentTbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-slate-400 font-medium">Chưa có lượt xe nào ghi nhận</td></tr>`;
+      } else {
+        recentTbody.innerHTML = recents.map(t => {
+          const statusBadge = t.status === 'COMPLETED'
+            ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Đã ra cổng</span>`
+            : (t.status === 'IN_YARD'
+              ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-100 text-amber-800 animate-pulse">Trong bãi</span>`
+              : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Đã hủy</span>`);
+
+          const timeInStr = t.time_in ? t.time_in.slice(11, 16) : '--:--';
+          const timeOutStr = t.time_out ? t.time_out.slice(11, 16) : '--:--';
+
+          return `
+            <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+              <td class="px-4 py-2.5 font-mono font-bold text-blue-700">${escapeHtml(t.ticket_code)}</td>
+              <td class="px-4 py-2.5 font-medium text-slate-800 text-xs">${escapeHtml(t.project_name || '-')}</td>
+              <td class="px-4 py-2.5 font-mono font-bold text-slate-900">${escapeHtml(t.plate_number)}</td>
+              <td class="px-4 py-2.5 text-slate-700">${escapeHtml(t.supplier_name)}</td>
+              <td class="px-4 py-2.5 font-medium text-slate-800">${escapeHtml(t.material_name)}</td>
+              <td class="px-4 py-2.5 text-center font-bold text-blue-700 bg-blue-50/50">${escapeHtml(t.unit || 'm³')}</td>
+              <td class="px-4 py-2.5 text-center font-mono text-slate-600">${timeInStr}</td>
+              <td class="px-4 py-2.5 text-center font-mono text-slate-600">${timeOutStr}</td>
+              <td class="px-4 py-2.5 text-right font-mono font-bold text-emerald-700">${Number(t.actual_volume).toFixed(2)}</td>
+              <td class="px-4 py-2.5 text-center">${statusBadge}</td>
+            </tr>
+          `;
+        }).join('');
       }
     }
 
@@ -1259,12 +1346,23 @@ async function loadDailyReport() {
     // Bảng theo Dự án
     const projTbody = document.getElementById('dailyByProjectTable');
     if (projTbody) {
-      projTbody.innerHTML = (data.byProject || []).map(p => `
-        <tr>
-          <td class="px-2 py-1.5 font-medium text-slate-800">${escapeHtml(p.project_name || 'Dự án')}</td>
-          <td class="px-2 py-1.5 text-center font-mono font-bold">${p.trips}</td>
-        </tr>
-      `).join('') || `<tr><td colspan="2" class="text-center py-2 text-slate-400">Không có dữ liệu</td></tr>`;
+      if (!data.byProject || data.byProject.length === 0) {
+        projTbody.innerHTML = `<tr><td colspan="3" class="text-center py-2 text-slate-400">Không có dữ liệu</td></tr>`;
+      } else {
+        projTbody.innerHTML = data.byProject.map(p => {
+          const volStr = (p.volume_by_unit && p.volume_by_unit.length > 0)
+            ? p.volume_by_unit.map(v => `<span class="inline-block bg-blue-50 text-blue-800 font-bold px-1.5 py-0.5 rounded border border-blue-200 ml-1 font-mono">${v.volume} ${escapeHtml(v.unit)}</span>`).join('')
+            : '<span class="text-slate-400 font-mono">0</span>';
+
+          return `
+            <tr>
+              <td class="px-2 py-1.5 font-medium text-slate-800">${escapeHtml(p.project_name || 'Dự án')}</td>
+              <td class="px-2 py-1.5 text-center font-mono font-bold">${p.trips}</td>
+              <td class="px-2 py-1.5 text-right font-mono font-bold text-emerald-700">${volStr}</td>
+            </tr>
+          `;
+        }).join('');
+      }
     }
 
     // Bảng kê chi tiết từng lượt xe
@@ -1488,17 +1586,24 @@ async function loadCumulativeReport() {
     const projTbody = document.getElementById('cumProjectTableBody');
     if (projTbody) {
       if (!data.byProject || data.byProject.length === 0) {
-        projTbody.innerHTML = `<tr><td colspan="5" class="text-center py-6 text-slate-400">Không có dữ liệu dự án</td></tr>`;
+        projTbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Không có dữ liệu dự án</td></tr>`;
       } else {
-        projTbody.innerHTML = data.byProject.map((p, idx) => `
-          <tr class="hover:bg-slate-50 transition">
-            <td class="px-4 py-3 text-center font-mono text-slate-500">${idx + 1}</td>
-            <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(p.project_name || 'Dự án')}</td>
-            <td class="px-4 py-3 text-center font-mono font-semibold">${p.trips}</td>
-            <td class="px-4 py-3 text-center font-mono">${p.supplier_count || 0}</td>
-            <td class="px-4 py-3 text-center font-mono">${p.vehicle_count || 0}</td>
-          </tr>
-        `).join('');
+        projTbody.innerHTML = data.byProject.map((p, idx) => {
+          const volDisplay = (p.volume_by_unit && p.volume_by_unit.length > 0)
+            ? p.volume_by_unit.map(v => `<span class="inline-block bg-emerald-50 text-emerald-800 font-bold px-2 py-0.5 rounded border border-emerald-200 ml-1 font-mono">${v.volume} ${escapeHtml(v.unit)}</span>`).join('')
+            : '<span class="text-slate-400 font-mono">0</span>';
+
+          return `
+            <tr class="hover:bg-slate-50 transition">
+              <td class="px-4 py-3 text-center font-mono text-slate-500">${idx + 1}</td>
+              <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(p.project_name || 'Dự án')}</td>
+              <td class="px-4 py-3 text-center font-mono font-semibold">${p.trips}</td>
+              <td class="px-4 py-3 text-center font-mono">${p.supplier_count || 0}</td>
+              <td class="px-4 py-3 text-center font-mono">${p.vehicle_count || 0}</td>
+              <td class="px-4 py-3 text-right">${volDisplay}</td>
+            </tr>
+          `;
+        }).join('');
       }
     }
 
@@ -1643,10 +1748,13 @@ async function loadUsers() {
 
   try {
     const res = await apiFetch('/api/users');
-    AppState.users = await res.json();
+    const data = await res.json();
+    AppState.users = Array.isArray(data) ? data : [];
     renderSettingsUsers();
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-red-500 font-semibold">${escapeHtml(err.message)}</td></tr>`;
+    const countEl = document.getElementById('userCountSummary');
+    if (countEl) countEl.textContent = '0 tài khoản';
   }
 }
 
@@ -1655,7 +1763,8 @@ function renderSettingsUsers() {
   if (!tbody) return;
 
   const filterProjId = document.getElementById('userFilterProject')?.value || '';
-  let usersToDisplay = AppState.users || [];
+  const allUsers = Array.isArray(AppState.users) ? AppState.users : [];
+  let usersToDisplay = [...allUsers];
 
   if (filterProjId) {
     const pId = parseInt(filterProjId, 10);
@@ -1665,7 +1774,7 @@ function renderSettingsUsers() {
   // Cập nhật số lượng tài khoản hiển thị
   const countEl = document.getElementById('userCountSummary');
   if (countEl) {
-    countEl.textContent = `Hiển thị ${usersToDisplay.length} / ${AppState.users.length} tài khoản`;
+    countEl.textContent = `Hiển thị ${usersToDisplay.length} / ${allUsers.length} tài khoản`;
   }
 
   if (usersToDisplay.length === 0) {
@@ -2059,12 +2168,13 @@ function renderSettingsProjects() {
   const tbody = document.getElementById('settingsProjectsTable');
   if (!tbody) return;
 
-  if (AppState.projects.length === 0) {
+  const projs = Array.isArray(AppState.projects) ? AppState.projects : [];
+  if (projs.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-slate-400">Chưa có dự án nào</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = AppState.projects.map(p => `
+  tbody.innerHTML = projs.map(p => `
     <tr class="hover:bg-slate-50 transition">
       <td class="px-4 py-3 font-mono font-semibold text-slate-700">${p.code}</td>
       <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(p.name)}</td>
@@ -2178,12 +2288,13 @@ function renderSettingsVehicles() {
   const tbody = document.getElementById('settingsVehiclesTable');
   if (!tbody) return;
 
-  if (AppState.vehicles.length === 0) {
+  const vehs = Array.isArray(AppState.vehicles) ? AppState.vehicles : [];
+  if (vehs.length === 0) {
     tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-slate-400">Chưa có xe nào trong danh mục</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = AppState.vehicles.map(v => {
+  tbody.innerHTML = vehs.map(v => {
     const dim = (v.length > 0 && v.width > 0 && v.height > 0)
       ? `${v.length} x ${v.width} x ${v.height}`
       : '-';
@@ -2355,12 +2466,13 @@ function renderSettingsMaterials() {
   const tbody = document.getElementById('settingsMaterialsTable');
   if (!tbody) return;
 
-  if (AppState.materials.length === 0) {
+  const mats = Array.isArray(AppState.materials) ? AppState.materials : [];
+  if (mats.length === 0) {
     tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Chưa có loại vật liệu nào</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = AppState.materials.map(m => `
+  tbody.innerHTML = mats.map(m => `
     <tr class="hover:bg-slate-50 transition">
       <td class="px-4 py-3 font-mono font-semibold text-slate-700">${m.code}</td>
       <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(m.name)}</td>
@@ -2470,12 +2582,13 @@ function renderSettingsSuppliers() {
   const tbody = document.getElementById('settingsSuppliersTable');
   if (!tbody) return;
 
-  if (AppState.suppliers.length === 0) {
+  const supps = Array.isArray(AppState.suppliers) ? AppState.suppliers : [];
+  if (supps.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-slate-400">Chưa có nhà cung cấp nào</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = AppState.suppliers.map(s => `
+  tbody.innerHTML = supps.map(s => `
     <tr class="hover:bg-slate-50 transition">
       <td class="px-4 py-3 font-mono font-semibold text-slate-700">${s.code}</td>
       <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(s.name)}</td>

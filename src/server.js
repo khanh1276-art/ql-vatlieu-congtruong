@@ -442,12 +442,18 @@ const server = http.createServer(async (req, res) => {
     // =========================================================================
     if (pathname === '/api/dashboard' && method === 'GET') {
       const currentUser = getAuthenticatedUser(req);
-      const todayStr = getLocalDateString();
+      const todayStr = url.searchParams.get('date') || getLocalDateString();
       let projectId = url.searchParams.get('projectId');
 
       // Nếu tài khoản là SITE_USER, bắt buộc cố định theo project của mình
       if (currentUser && currentUser.role === 'SITE_USER') {
         projectId = currentUser.project_id;
+      }
+
+      let projectName = 'Tất cả 3 dự án';
+      if (projectId) {
+        const pObj = db.prepare('SELECT name FROM projects WHERE id = ?').get(parseInt(projectId, 10));
+        if (pObj) projectName = pObj.name;
       }
 
       let projectFilter = '';
@@ -474,6 +480,16 @@ const server = http.createServer(async (req, res) => {
         WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
         GROUP BY unit
       `).all(...params);
+
+      // Thêm sản lượng lũy kế toàn thời gian của dự án / hệ thống theo từng ĐVT
+      let cumSql = "SELECT unit, ROUND(SUM(actual_volume), 2) as total_volume, COUNT(*) as trips FROM tickets WHERE status != 'CANCELLED'";
+      const cumParams = [];
+      if (projectId) {
+        cumSql += ' AND project_id = ?';
+        cumParams.push(parseInt(projectId, 10));
+      }
+      cumSql += ' GROUP BY unit';
+      const cumulativeVolumeByUnit = db.prepare(cumSql).all(...cumParams);
 
       const materialBreakdown = db.prepare(`
         SELECT 
@@ -508,8 +524,11 @@ const server = http.createServer(async (req, res) => {
 
       return sendJson(res, 200, {
         today: todayStr,
+        projectId: projectId ? parseInt(projectId, 10) : null,
+        projectName,
         stats: statsToday,
         volumeByUnit: volumeByUnitToday,
+        cumulativeVolumeByUnit,
         materialBreakdown,
         hourlyDistribution,
         recentTickets
@@ -1188,6 +1207,16 @@ const server = http.createServer(async (req, res) => {
         ORDER BY trips DESC
       `).all(...params);
 
+      for (const p of byProject) {
+        p.volume_by_unit = db.prepare(`
+          SELECT unit, ROUND(SUM(actual_volume), 2) as volume
+          FROM tickets
+          WHERE date(time_in) = date(?) AND status != 'CANCELLED' AND project_name = ?
+          GROUP BY unit
+          ORDER BY volume DESC
+        `).all(params[0], p.project_name);
+      }
+
       return sendJson(res, 200, {
         date,
         summary,
@@ -1263,6 +1292,17 @@ const server = http.createServer(async (req, res) => {
         GROUP BY project_name
         ORDER BY trips DESC
       `).all(...baseParams);
+
+      for (const p of byProject) {
+        let pFilter = filterSql + ' AND project_name = ?';
+        p.volume_by_unit = db.prepare(`
+          SELECT unit, ROUND(SUM(actual_volume), 2) as volume
+          FROM tickets
+          WHERE 1=1 ${pFilter}
+          GROUP BY unit
+          ORDER BY volume DESC
+        `).all(...baseParams, p.project_name);
+      }
 
       const bySupplier = db.prepare(`
         SELECT 

@@ -387,6 +387,20 @@
     <!-- TAB 2: BẢNG ĐIỀU KHIỂN (DASHBOARD)                               -->
     <!-- ================================================================ -->
     <section id="tab-dashboard" class="tab-pane hidden space-y-6">
+      <!-- Thanh chọn nhanh Dự Án trực tiếp trên Bảng Điều Khiển -->
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+        <div class="flex items-center space-x-2">
+          <span class="text-sm font-bold text-slate-800">📊 Phạm Vi Theo Dõi Khối Lượng:</span>
+          <span id="dashProjectBadge" class="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">Toàn bộ 3 dự án</span>
+        </div>
+        <div class="flex items-center space-x-2">
+          <label class="text-xs text-slate-500 font-semibold">Lọc theo dự án:</label>
+          <select id="dashProjectSelect" onchange="handleDashProjectChange(this.value)" class="text-xs font-semibold px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500">
+            <option value="">-- Tất cả dự án --</option>
+          </select>
+        </div>
+      </div>
+
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm card-hover">
           <div class="flex items-center justify-between text-slate-500 mb-2">
@@ -432,7 +446,10 @@
           <div id="dashVolumeByUnitBox" class="space-y-1 text-xs font-mono font-bold text-blue-700">
             <div>Chưa có phát sinh</div>
           </div>
-          <p class="text-[11px] text-slate-400 mt-1">Tách riêng m³, Tấn, m...</p>
+          <div class="pt-2 mt-2 border-t border-slate-100">
+            <span class="text-[10px] font-bold uppercase text-slate-400">Lũy kế toàn thời gian:</span>
+            <div id="dashCumVolumeBox" class="text-xs font-mono font-bold text-emerald-700 mt-0.5">0</div>
+          </div>
         </div>
       </div>
 
@@ -574,6 +591,7 @@
                 <tr>
                   <th class="px-2 py-1.5 text-left">Dự Án / Công Trường</th>
                   <th class="px-2 py-1.5 text-center">Số Chuyến</th>
+                  <th class="px-2 py-1.5 text-right">Khối Lượng Trong Ngày</th>
                 </tr>
               </thead>
               <tbody id="dailyByProjectTable" class="divide-y divide-slate-100"></tbody>
@@ -748,7 +766,8 @@
                 <th class="px-4 py-3">Tên Dự Án / Công Trường</th>
                 <th class="px-4 py-3 text-center">Số Chuyến</th>
                 <th class="px-4 py-3 text-center">Số Nhà Cung Cấp</th>
-                <th class="px-4 py-3 text-center">Số Xe</th>
+                <th class="px-4 py-3 text-center">Số Xe Phục Vụ</th>
+                <th class="px-4 py-3 text-right">Tổng Khối Lượng Lũy Kế (Theo ĐVT)</th>
               </tr>
             </thead>
             <tbody id="cumProjectTableBody" class="divide-y divide-slate-100"></tbody>
