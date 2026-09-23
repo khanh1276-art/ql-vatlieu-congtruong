@@ -1,11 +1,12 @@
 // Máy chủ HTTP REST API & Phục vụ giao diện cho Phần mềm Quản lý Kho Vật Liệu Công Trường
-// Hỗ trợ Đa Dự Án (Multi-project) & Đa Đơn Vị Tính (Tấn, m dài, m³, cái, bao...)
+// Hỗ trợ: Đa Dự Án, Đa Đơn Vị Tính, Phân Quyền Tài Khoản (Admin vs Công trường) & Khóa Số Liệu Qua Ngày
 // Sử dụng node:http thuần & node:sqlite (Zero-Dependency)
 
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { db } = require('./db.js');
+const crypto = require('node:crypto');
+const { db, hashPassword, verifyPassword } = require('./db.js');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -58,7 +59,7 @@ function parseRequestBody(req) {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk.toString();
-      if (body.length > 5 * 1024 * 1024) { // giới hạn 5MB
+      if (body.length > 5 * 1024 * 1024) {
         reject(new Error('Payload too large'));
       }
     });
@@ -80,9 +81,54 @@ function sendJson(res, statusCode, data) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-auth-token'
   });
   res.end(JSON.stringify(data));
+}
+
+// Trích xuất thông tin người dùng từ Token phiên làm việc
+function getAuthenticatedUser(req) {
+  const authHeader = req.headers['authorization'] || req.headers['x-auth-token'] || '';
+  let token = '';
+  if (authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  } else {
+    token = authHeader.trim();
+  }
+
+  if (!token && req.url) {
+    try {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      token = parsedUrl.searchParams.get('token') || '';
+    } catch (e) {}
+  }
+
+  if (!token) return null;
+
+  try {
+    const session = db.prepare(`
+      SELECT s.*, u.id as user_id, u.username, u.full_name, u.role, u.project_id, u.status as user_status,
+             p.name as project_name
+      FROM sessions s
+      JOIN users u ON s.user_id = u.id
+      LEFT JOIN projects p ON u.project_id = p.id
+      WHERE s.token = ? AND datetime(s.expires_at) > datetime('now', 'localtime')
+    `).get(token);
+
+    if (!session || session.user_status !== 'ACTIVE') return null;
+
+    return {
+      id: session.user_id,
+      username: session.username,
+      full_name: session.full_name,
+      role: session.role,
+      project_id: session.project_id,
+      project_name: session.project_name
+    };
+  } catch (err) {
+    console.error('Lỗi xác thực token:', err);
+    return null;
+  }
 }
 
 // MIME types
@@ -103,7 +149,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-auth-token'
     });
     return res.end();
   }
@@ -114,7 +160,193 @@ const server = http.createServer(async (req, res) => {
 
   try {
     // =========================================================================
-    // 0. API: QUẢN LÝ DỰ ÁN / CÔNG TRƯỜNG (PROJECTS)
+    // 1. API XÁC THỰC (AUTHENTICATION: LOGIN / LOGOUT / ME)
+    // =========================================================================
+    if (pathname === '/api/auth/login' && method === 'POST') {
+      const body = await parseRequestBody(req);
+      const username = (body.username || '').trim().toLowerCase();
+      const password = body.password || '';
+
+      if (!username || !password) {
+        return sendJson(res, 400, { error: 'Vui lòng nhập tên đăng nhập và mật khẩu' });
+      }
+
+      const user = db.prepare(`
+        SELECT u.*, p.name as project_name 
+        FROM users u
+        LEFT JOIN projects p ON u.project_id = p.id
+        WHERE lower(u.username) = ?
+      `).get(username);
+
+      if (!user || !verifyPassword(password, user.password_hash)) {
+        return sendJson(res, 401, { error: 'Tên đăng nhập hoặc mật khẩu không chính xác' });
+      }
+
+      if (user.status !== 'ACTIVE') {
+        return sendJson(res, 403, { error: 'Tài khoản này đang bị khóa. Vui lòng liên hệ Admin!' });
+      }
+
+      // Tạo token phiên làm việc ngẫu nhiên 64 ký tự hex
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // Có hiệu lực 30 ngày
+
+      db.prepare(`
+        INSERT INTO sessions (token, user_id, expires_at)
+        VALUES (?, ?, ?)
+      `).run(token, user.id, getLocalDateTime(expiresAt));
+
+      return sendJson(res, 200, {
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          full_name: user.full_name,
+          role: user.role,
+          project_id: user.project_id,
+          project_name: user.project_name
+        }
+      });
+    }
+
+    if (pathname === '/api/auth/me' && method === 'GET') {
+      const user = getAuthenticatedUser(req);
+      if (!user) {
+        return sendJson(res, 401, { error: 'Chưa đăng nhập hoặc phiên làm việc đã hết hạn' });
+      }
+      return sendJson(res, 200, user);
+    }
+
+    if (pathname === '/api/auth/logout' && method === 'POST') {
+      const authHeader = req.headers['authorization'] || req.headers['x-auth-token'] || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+      if (token) {
+        db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+      }
+      return sendJson(res, 200, { success: true });
+    }
+
+    // =========================================================================
+    // 2. API QUẢN LÝ TÀI KHOẢN NGƯỜI DÙNG (DÀNH RIÊNG CHO ADMIN)
+    // =========================================================================
+    if (pathname === '/api/users' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xem danh sách tài khoản' });
+      }
+
+      const users = db.prepare(`
+        SELECT u.id, u.username, u.full_name, u.role, u.project_id, u.status, u.created_at,
+               p.name as project_name
+        FROM users u
+        LEFT JOIN projects p ON u.project_id = p.id
+        ORDER BY u.role ASC, u.id ASC
+      `).all();
+
+      return sendJson(res, 200, users);
+    }
+
+    if (pathname === '/api/users' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền tạo tài khoản' });
+      }
+
+      const body = await parseRequestBody(req);
+      const username = (body.username || '').trim().toLowerCase();
+      const password = body.password || '123456';
+      const fullName = (body.full_name || '').trim();
+      const role = body.role === 'ADMIN' ? 'ADMIN' : 'SITE_USER';
+      const projectId = role === 'SITE_USER' ? (parseInt(body.project_id, 10) || null) : null;
+
+      if (!username || !fullName) {
+        return sendJson(res, 400, { error: 'Tên đăng nhập và Họ tên không được để trống' });
+      }
+
+      if (role === 'SITE_USER' && !projectId) {
+        return sendJson(res, 400, { error: 'Vui lòng chọn Dự án / Công trường gán cho tài khoản này' });
+      }
+
+      try {
+        const result = db.prepare(`
+          INSERT INTO users (username, password_hash, full_name, role, project_id, status)
+          VALUES (?, ?, ?, ?, ?, 'ACTIVE')
+        `).run(username, hashPassword(password), fullName, role, projectId);
+
+        const newUser = db.prepare(`
+          SELECT u.id, u.username, u.full_name, u.role, u.project_id, u.status, p.name as project_name
+          FROM users u
+          LEFT JOIN projects p ON u.project_id = p.id
+          WHERE u.id = ?
+        `).get(result.lastInsertRowid);
+
+        return sendJson(res, 201, newUser);
+      } catch (err) {
+        if (err.message && err.message.includes('UNIQUE')) {
+          return sendJson(res, 400, { error: `Tên đăng nhập "${username}" đã tồn tại` });
+        }
+        throw err;
+      }
+    }
+
+    if (pathname.startsWith('/api/users/') && method === 'PUT') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền chỉnh sửa tài khoản' });
+      }
+
+      const id = parseInt(pathname.split('/')[3], 10);
+      const body = await parseRequestBody(req);
+
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+      if (!user) return sendJson(res, 404, { error: 'Không tìm thấy tài khoản' });
+
+      let newPwdHash = user.password_hash;
+      if (body.password && body.password.trim()) {
+        newPwdHash = hashPassword(body.password.trim());
+      }
+
+      db.prepare(`
+        UPDATE users SET
+          full_name = COALESCE(?, full_name),
+          project_id = ?,
+          password_hash = ?,
+          status = COALESCE(?, status)
+        WHERE id = ?
+      `).run(
+        body.full_name ? body.full_name.trim() : null,
+        body.role === 'ADMIN' ? null : (body.project_id ? parseInt(body.project_id, 10) : user.project_id),
+        newPwdHash,
+        body.status || null,
+        id
+      );
+
+      const updated = db.prepare(`
+        SELECT u.id, u.username, u.full_name, u.role, u.project_id, u.status, p.name as project_name
+        FROM users u
+        LEFT JOIN projects p ON u.project_id = p.id
+        WHERE u.id = ?
+      `).get(id);
+
+      return sendJson(res, 200, updated);
+    }
+
+    if (pathname.startsWith('/api/users/') && method === 'DELETE') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa tài khoản' });
+      }
+
+      const id = parseInt(pathname.split('/')[3], 10);
+      if (id === currentUser.id) {
+        return sendJson(res, 400, { error: 'Bạn không thể tự xóa tài khoản của chính mình' });
+      }
+
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+      return sendJson(res, 200, { success: true, id });
+    }
+
+    // =========================================================================
+    // 3. API DỰ ÁN (PROJECTS)
     // =========================================================================
     if (pathname === '/api/projects' && method === 'GET') {
       const list = db.prepare(`
@@ -131,10 +363,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/projects' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (currentUser && currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền thêm dự án' });
+      }
+
       const body = await parseRequestBody(req);
       const name = (body.name || '').trim();
       const code = (body.code || '').trim().toUpperCase() || `DA-${Date.now().toString().slice(-4)}`;
-      if (!name) return sendJson(res, 400, { error: 'Tên dự án/công trường không được để trống' });
+      if (!name) return sendJson(res, 400, { error: 'Tên dự án không được để trống' });
 
       try {
         const result = db.prepare(`
@@ -153,6 +390,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/projects/') && method === 'PUT') {
+      const currentUser = getAuthenticatedUser(req);
+      if (currentUser && currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền sửa dự án' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await parseRequestBody(req);
       db.prepare(`
@@ -176,6 +418,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/projects/') && method === 'DELETE') {
+      const currentUser = getAuthenticatedUser(req);
+      if (currentUser && currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa dự án' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       const usedTickets = db.prepare('SELECT COUNT(*) as count FROM tickets WHERE project_id = ?').get(id).count;
       if (usedTickets > 0) {
@@ -186,11 +433,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     // =========================================================================
-    // 1. API: DASHBOARD (Hỗ trợ lọc theo Project)
+    // 4. API DASHBOARD (Tự động lọc theo Role Công Trường hoặc query ProjectId)
     // =========================================================================
     if (pathname === '/api/dashboard' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
       const todayStr = getLocalDateString();
-      const projectId = url.searchParams.get('projectId');
+      let projectId = url.searchParams.get('projectId');
+
+      // Nếu tài khoản là SITE_USER, bắt buộc cố định theo project của mình
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+      }
 
       let projectFilter = '';
       const params = [todayStr];
@@ -199,7 +452,6 @@ const server = http.createServer(async (req, res) => {
         params.push(parseInt(projectId, 10));
       }
 
-      // Thống kê hôm nay
       const statsToday = db.prepare(`
         SELECT 
           COUNT(CASE WHEN status != 'CANCELLED' THEN 1 END) as total_trips,
@@ -209,7 +461,6 @@ const server = http.createServer(async (req, res) => {
         WHERE date(time_in) = date(?) ${projectFilter}
       `).get(...params);
 
-      // Thống kê khối lượng tổng hợp theo từng đơn vị tính hôm nay
       const volumeByUnitToday = db.prepare(`
         SELECT 
           unit,
@@ -219,7 +470,6 @@ const server = http.createServer(async (req, res) => {
         GROUP BY unit
       `).all(...params);
 
-      // Thống kê theo loại vật liệu & đơn vị tính hôm nay
       const materialBreakdown = db.prepare(`
         SELECT 
           material_name,
@@ -232,7 +482,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY volume DESC
       `).all(...params);
 
-      // Thống kê theo khung giờ hôm nay
       const hourlyDistribution = db.prepare(`
         SELECT 
           strftime('%H', time_in) as hour,
@@ -243,7 +492,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY hour ASC
       `).all(...params);
 
-      // 10 lượt xe vào ra mới nhất
       let recentSql = 'SELECT * FROM tickets WHERE 1=1';
       const recentParams = [];
       if (projectId) {
@@ -264,13 +512,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     // =========================================================================
-    // 2. API: TỰ ĐỘNG TRA CỨU XE THEO BIỂN SỐ (AUTOCOMPLETE / QUICK LOOKUP)
+    // 5. API DANH MỤC XE & TRA CỨU
     // =========================================================================
     if (pathname === '/api/vehicles/lookup' && method === 'GET') {
       const query = (url.searchParams.get('q') || '').trim();
-      if (!query) {
-        return sendJson(res, 200, []);
-      }
+      if (!query) return sendJson(res, 200, []);
 
       const vehicles = db.prepare(`
         SELECT v.*, s.name as supplier_name, m.name as default_material_name, m.unit as default_material_unit,
@@ -287,9 +533,6 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, vehicles);
     }
 
-    // =========================================================================
-    // 3. API: DANH MỤC XE (VEHICLES)
-    // =========================================================================
     if (pathname === '/api/vehicles' && method === 'GET') {
       const list = db.prepare(`
         SELECT v.*, s.name as supplier_name, m.name as default_material_name, m.unit as default_material_unit,
@@ -402,7 +645,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // =========================================================================
-    // 4. API: NHÀ CUNG CẤP (SUPPLIERS)
+    // 6. API NHÀ CUNG CẤP & VẬT LIỆU
     // =========================================================================
     if (pathname === '/api/suppliers' && method === 'GET') {
       const list = db.prepare(`
@@ -469,9 +712,6 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: true, id });
     }
 
-    // =========================================================================
-    // 5. API: LOẠI VẬT LIỆU (MATERIALS - Đa đơn vị tính: m³, Tấn, m, kg...)
-    // =========================================================================
     if (pathname === '/api/materials' && method === 'GET') {
       const list = db.prepare(`
         SELECT m.*,
@@ -536,17 +776,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     // =========================================================================
-    // 6. API: QUẢN LÝ PHIẾU VÀO/RA (TICKETS & CHECK-IN / CHECK-OUT)
+    // 7. API QUẢN LÝ PHIẾU VÀO/RA (CHECK-IN / CHECK-OUT / KHÓA SỐ LIỆU QUA NGÀY)
     // =========================================================================
-
-    // Danh sách phiếu với các bộ lọc (date, status, supplier, material, search, project)
     if (pathname === '/api/tickets' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
       const status = url.searchParams.get('status');
       const date = url.searchParams.get('date');
       const supplierId = url.searchParams.get('supplierId');
       const materialId = url.searchParams.get('materialId');
-      const projectId = url.searchParams.get('projectId');
+      let projectId = url.searchParams.get('projectId');
       const search = (url.searchParams.get('search') || '').trim();
+
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+      }
 
       let sql = 'SELECT * FROM tickets WHERE 1=1';
       const params = [];
@@ -582,9 +825,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, tickets);
     }
 
-    // Danh sách các xe ĐANG TRONG BÃI (In-yard list, lọc theo project nếu có)
     if (pathname === '/api/tickets/in-yard' && method === 'GET') {
-      const projectId = url.searchParams.get('projectId');
+      const currentUser = getAuthenticatedUser(req);
+      let projectId = url.searchParams.get('projectId');
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+      }
+
       let sql = `SELECT * FROM tickets WHERE status = 'IN_YARD'`;
       const params = [];
       if (projectId) {
@@ -598,25 +845,30 @@ const server = http.createServer(async (req, res) => {
 
     // Ghi nhận XE VÀO CỔNG (Check-in)
     if (pathname === '/api/tickets/checkin' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
       const body = await parseRequestBody(req);
       const plate = (body.plate_number || '').trim().toUpperCase();
       if (!plate) return sendJson(res, 400, { error: 'Biển số xe không được để trống' });
 
-      // Dự án
+      // Dự án: Nếu là tài khoản công trường, ép buộc lấy dự án của tài khoản
       let projectId = body.project_id ? parseInt(body.project_id, 10) : null;
       let projectName = (body.project_name || '').trim();
-      if (projectId && !projectName) {
+
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+        projectName = currentUser.project_name;
+      } else if (projectId && !projectName) {
         const proj = db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId);
         if (proj) projectName = proj.name;
       }
+
       if (!projectName) {
-        // Lấy dự án đầu tiên làm mặc định nếu có
         const defProj = db.prepare('SELECT id, name FROM projects ORDER BY id ASC LIMIT 1').get();
         if (defProj) {
           projectId = defProj.id;
           projectName = defProj.name;
         } else {
-          projectName = 'Công trường chính';
+          projectName = 'Công trường';
         }
       }
 
@@ -632,7 +884,6 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      // Tìm thông tin Nhà cung cấp
       let supplierId = body.supplier_id ? parseInt(body.supplier_id, 10) : null;
       let supplierName = (body.supplier_name || '').trim();
       if (supplierId) {
@@ -640,7 +891,6 @@ const server = http.createServer(async (req, res) => {
         if (supp) supplierName = supp.name;
       }
 
-      // Tìm thông tin Vật liệu & Đơn vị tính
       let materialId = body.material_id ? parseInt(body.material_id, 10) : null;
       let materialName = (body.material_name || '').trim();
       let unit = (body.unit || '').trim();
@@ -654,19 +904,14 @@ const server = http.createServer(async (req, res) => {
       }
       if (!unit) unit = 'm³';
 
-      if (!materialName) {
-        return sendJson(res, 400, { error: 'Vui lòng chọn loại vật liệu chuyên chở' });
-      }
-      if (!supplierName) {
-        return sendJson(res, 400, { error: 'Vui lòng chọn nhà cung cấp' });
-      }
+      if (!materialName) return sendJson(res, 400, { error: 'Vui lòng chọn loại vật liệu chuyên chở' });
+      if (!supplierName) return sendJson(res, 400, { error: 'Vui lòng chọn nhà cung cấp' });
 
       const length = parseFloat(body.length) || 0;
       const width = parseFloat(body.width) || 0;
       const height = parseFloat(body.height) || 0;
       const standardVolume = parseFloat(body.standard_volume) || 0;
 
-      // Xử lý khối lượng nghiệm thu
       const isManualAdjusted = body.is_manual_adjusted ? 1 : 0;
       let actualVolume = standardVolume;
       if (isManualAdjusted && body.actual_volume !== undefined && body.actual_volume !== null && body.actual_volume !== '') {
@@ -677,7 +922,6 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: `Khối lượng nghiệm thu phải lớn hơn 0 ${unit}` });
       }
 
-      // Tự động lưu xe mới vào danh mục nếu chưa có
       let vehicleId = body.vehicle_id ? parseInt(body.vehicle_id, 10) : null;
       let vehRecord = db.prepare('SELECT id FROM vehicles WHERE plate_number = ?').get(plate);
       if (vehRecord) {
@@ -702,6 +946,7 @@ const server = http.createServer(async (req, res) => {
 
       const ticketCode = generateTicketCode();
       const timeIn = body.time_in ? body.time_in : getLocalDateTime();
+      const createdBy = currentUser ? `${currentUser.full_name} (${currentUser.role === 'ADMIN' ? 'Admin' : 'Công trường'})` : 'Cán bộ trực cổng';
 
       const result = db.prepare(`
         INSERT INTO tickets (
@@ -715,7 +960,7 @@ const server = http.createServer(async (req, res) => {
         materialId, materialName, unit, timeIn,
         length, width, height, standardVolume, actualVolume,
         isManualAdjusted, body.adjustment_reason || '',
-        body.created_by || 'Thủ kho / Cán bộ cổng',
+        createdBy,
         body.notes || '',
         timeIn
       );
@@ -726,6 +971,7 @@ const server = http.createServer(async (req, res) => {
 
     // Xác nhận XE RA CỔNG (Check-out)
     if (pathname.match(/^\/api\/tickets\/\d+\/checkout$/) && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await parseRequestBody(req);
 
@@ -733,6 +979,11 @@ const server = http.createServer(async (req, res) => {
       if (!ticket) return sendJson(res, 404, { error: 'Không tìm thấy phiếu xe vào' });
       if (ticket.status === 'COMPLETED') {
         return sendJson(res, 400, { error: 'Phiếu này đã xác nhận ra cổng trước đó' });
+      }
+
+      // Kiểm tra quyền: nếu là SITE_USER, không được thao tác trên xe của dự án khác
+      if (currentUser && currentUser.role === 'SITE_USER' && ticket.project_id !== currentUser.project_id) {
+        return sendJson(res, 403, { error: 'Bạn không có quyền thao tác trên xe của dự án khác!' });
       }
 
       const timeOut = body.time_out ? body.time_out : getLocalDateTime();
@@ -773,12 +1024,30 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Cập nhật thông tin phiếu (Sửa lại khi nhập nhầm thông tin)
+    // QUY TẮC KHÓA SỐ LIỆU QUA NGÀY (TIME-LOCK)
     if (pathname.match(/^\/api\/tickets\/\d+$/) && method === 'PUT') {
+      const currentUser = getAuthenticatedUser(req);
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await parseRequestBody(req);
 
       const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
       if (!ticket) return sendJson(res, 404, { error: 'Không tìm thấy phiếu' });
+
+      // KIỂM TRA QUY TẮC KHÓA SỐ LIỆU QUA NGÀY CHO TÀI KHOẢN CÔNG TRƯỜNG
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        const ticketDate = ticket.time_in.split(' ')[0];
+        const todayDate = getLocalDateString();
+
+        if (ticketDate !== todayDate) {
+          return sendJson(res, 403, {
+            error: `🔒 Số liệu của ngày ${ticketDate} đã bị khóa sổ (chỉ được sửa trong ngày). Vui lòng liên hệ Admin văn phòng để điều chỉnh!`
+          });
+        }
+
+        if (ticket.project_id !== currentUser.project_id) {
+          return sendJson(res, 403, { error: 'Bạn không có quyền điều chỉnh số liệu của dự án khác!' });
+        }
+      }
 
       db.prepare(`
         UPDATE tickets SET
@@ -819,19 +1088,44 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, updated);
     }
 
-    // Hủy phiếu
+    // Hủy phiếu (ÁP DỤNG KHÓA SỐ LIỆU QUA NGÀY)
     if (pathname.match(/^\/api\/tickets\/\d+$/) && method === 'DELETE') {
+      const currentUser = getAuthenticatedUser(req);
       const id = parseInt(pathname.split('/')[3], 10);
+
+      const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
+      if (!ticket) return sendJson(res, 404, { error: 'Không tìm thấy phiếu' });
+
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        const ticketDate = ticket.time_in.split(' ')[0];
+        const todayDate = getLocalDateString();
+
+        if (ticketDate !== todayDate) {
+          return sendJson(res, 403, {
+            error: `🔒 Không thể hủy phiếu của ngày ${ticketDate} do đã khóa sổ qua ngày. Vui lòng liên hệ Admin văn phòng!`
+          });
+        }
+
+        if (ticket.project_id !== currentUser.project_id) {
+          return sendJson(res, 403, { error: 'Bạn không có quyền can thiệp số liệu của dự án khác!' });
+        }
+      }
+
       db.prepare("UPDATE tickets SET status = 'CANCELLED' WHERE id = ?").run(id);
       return sendJson(res, 200, { success: true, id });
     }
 
     // =========================================================================
-    // 7. API: BÁO CÁO HÀNG NGÀY (DAILY REPORT - Phân rã theo Vật liệu & ĐVT)
+    // 8. BÁO CÁO HÀNG NGÀY & LŨY KẾ
     // =========================================================================
     if (pathname === '/api/reports/daily' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
       const date = url.searchParams.get('date') || getLocalDateString();
-      const projectId = url.searchParams.get('projectId');
+      let projectId = url.searchParams.get('projectId');
+
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+      }
 
       let projectFilter = '';
       const params = [date];
@@ -840,14 +1134,12 @@ const server = http.createServer(async (req, res) => {
         params.push(parseInt(projectId, 10));
       }
 
-      // Danh sách tất cả các chuyến trong ngày
       const tickets = db.prepare(`
         SELECT * FROM tickets
         WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
         ORDER BY time_in ASC
       `).all(...params);
 
-      // Tổng hợp ngày
       const summary = db.prepare(`
         SELECT 
           COUNT(*) as total_trips,
@@ -858,7 +1150,6 @@ const server = http.createServer(async (req, res) => {
         WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
       `).get(...params);
 
-      // Phân rã theo Loại vật liệu và Đơn vị tính
       const byMaterial = db.prepare(`
         SELECT 
           material_name,
@@ -871,7 +1162,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY trips DESC
       `).all(...params);
 
-      // Phân rã theo Nhà cung cấp
       const bySupplier = db.prepare(`
         SELECT 
           supplier_name,
@@ -882,7 +1172,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY trips DESC
       `).all(...params);
 
-      // Phân rã theo Dự án
       const byProject = db.prepare(`
         SELECT 
           project_id,
@@ -904,15 +1193,17 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // =========================================================================
-    // 8. API: BÁO CÁO KHỐI LƯỢNG LŨY KẾ (CUMULATIVE REPORT)
-    // =========================================================================
     if (pathname === '/api/reports/cumulative' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
       const startDate = url.searchParams.get('startDate') || getLocalDateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
       const endDate = url.searchParams.get('endDate') || getLocalDateString();
-      const projectId = url.searchParams.get('projectId');
+      let projectId = url.searchParams.get('projectId');
       const supplierId = url.searchParams.get('supplierId');
       const materialId = url.searchParams.get('materialId');
+
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+      }
 
       let filterSql = ` AND date(time_in) >= date(?) AND date(time_in) <= date(?) AND status != 'CANCELLED'`;
       const baseParams = [startDate, endDate];
@@ -930,7 +1221,6 @@ const server = http.createServer(async (req, res) => {
         baseParams.push(parseInt(materialId, 10));
       }
 
-      // Tổng quan lũy kế
       const totalSummary = db.prepare(`
         SELECT 
           COUNT(*) as cumulative_trips,
@@ -942,7 +1232,6 @@ const server = http.createServer(async (req, res) => {
         WHERE 1=1 ${filterSql}
       `).get(...baseParams);
 
-      // Bảng tổng hợp lũy kế theo từng Loại vật liệu (kèm đơn vị tính riêng biệt)
       const byMaterial = db.prepare(`
         SELECT 
           material_id,
@@ -957,7 +1246,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY trips DESC
       `).all(...baseParams);
 
-      // Bảng tổng hợp lũy kế theo Dự Án / Công Trường
       const byProject = db.prepare(`
         SELECT 
           project_id,
@@ -971,7 +1259,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY trips DESC
       `).all(...baseParams);
 
-      // Bảng tổng hợp lũy kế theo từng Nhà cung cấp
       const bySupplier = db.prepare(`
         SELECT 
           supplier_id,
@@ -984,7 +1271,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY trips DESC
       `).all(...baseParams);
 
-      // Bảng chi tiết sản lượng của từng Nhà cung cấp theo từng Loại vật liệu
       const supplierMaterialBreakdown = db.prepare(`
         SELECT 
           supplier_name,
@@ -998,7 +1284,6 @@ const server = http.createServer(async (req, res) => {
         ORDER BY supplier_name ASC, volume DESC
       `).all(...baseParams);
 
-      // Bảng chi tiết theo từng xe
       const byVehicle = db.prepare(`
         SELECT 
           plate_number,
@@ -1028,19 +1313,21 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // =========================================================================
-    // 9. API: XUẤT EXCEL BÁO CÁO (Hỗ trợ Dự án và Đơn vị tính)
-    // =========================================================================
     if (pathname === '/api/reports/export-excel' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
       const type = url.searchParams.get('type') || 'daily';
       const date = url.searchParams.get('date') || getLocalDateString();
       const startDate = url.searchParams.get('startDate') || date;
       const endDate = url.searchParams.get('endDate') || date;
-      const projectId = url.searchParams.get('projectId');
+      let projectId = url.searchParams.get('projectId');
+
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        projectId = currentUser.project_id;
+      }
 
       let filename = `Bao_Cao_${type === 'daily' ? `Ngay_${date}` : `Luy_Ke_${startDate}_den_${endDate}`}.xls`;
-
       let xmlContent = '';
+
       if (type === 'daily') {
         let filterSql = `date(time_in) = date(?) AND status != 'CANCELLED'`;
         const params = [date];
@@ -1089,7 +1376,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // =========================================================================
-    // 10. PHỤC VỤ STATIC FILES (HTML, JS, CSS)
+    // 9. PHỤC VỤ STATIC FILES
     // =========================================================================
     let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
@@ -1381,7 +1668,7 @@ function escapeXml(unsafe) {
 server.listen(PORT, () => {
   console.log(`=====================================================`);
   console.log(` PHẦN MỀM QUẢN LÝ KHO VẬT LIỆU CÔNG TRƯỜNG`);
-  console.log(` Máy chủ đang chạy tại: http://localhost:3000`);
+  console.log(` Máy chủ đang chạy tại: http://localhost:${PORT}`);
   console.log(` Mạng nội bộ: http://0.0.0.0:${PORT}`);
   console.log(`=====================================================`);
 });

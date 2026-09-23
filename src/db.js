@@ -1,9 +1,10 @@
 // Quản lý cơ sở dữ liệu SQLite cho phần mềm Xuất Nhập Kho Vật Liệu Xây Dựng
-// Hỗ trợ Đa Dự Án (Multi-project) & Đa Đơn Vị Tính (Tấn, m dài, m³, cái...)
+// Hỗ trợ Đa Dự Án (Multi-project), Đa Đơn Vị Tính & Phân Quyền Tài Khoản (Admin vs Công trường)
 
 const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) {
@@ -19,6 +20,16 @@ db.exec(`
   PRAGMA foreign_keys = ON;
 `);
 
+// Hàm băm mật khẩu an toàn bằng SHA256 kèm muối cố định
+function hashPassword(password) {
+  const salt = 'vlxd_site_salt_2026';
+  return crypto.createHash('sha256').update(password + salt).digest('hex');
+}
+
+function verifyPassword(password, hash) {
+  return hashPassword(password) === hash;
+}
+
 function initSchema() {
   db.exec(`
     -- Bảng Dự Án / Công Trường
@@ -30,6 +41,28 @@ function initSchema() {
       status TEXT DEFAULT 'ACTIVE',
       notes TEXT,
       created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+
+    -- Bảng Tài Khoản Người Dùng & Phân Quyền
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      full_name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'SITE_USER', -- 'ADMIN' (Văn phòng) hoặc 'SITE_USER' (Công trường)
+      project_id INTEGER,
+      status TEXT DEFAULT 'ACTIVE',
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    );
+
+    -- Bảng Phiên Đăng Nhập (Sessions)
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     -- Bảng Nhà cung cấp
@@ -106,10 +139,8 @@ function initSchema() {
     );
   `);
 
-  // Migration tự động bổ sung cột nếu bảng cũ tồn tại
   migrateSchema();
 
-  // Tạo index sau khi đã đảm bảo các cột tồn tại
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tickets_project ON tickets(project_id);
     CREATE INDEX IF NOT EXISTS idx_tickets_time_in ON tickets(time_in);
@@ -117,9 +148,12 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_tickets_supplier ON tickets(supplier_id);
     CREATE INDEX IF NOT EXISTS idx_tickets_material ON tickets(material_id);
     CREATE INDEX IF NOT EXISTS idx_tickets_plate ON tickets(plate_number);
+    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+    CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
   `);
 
   seedDefaultData();
+  seedUsers();
 }
 
 function migrateSchema() {
@@ -144,10 +178,8 @@ function migrateSchema() {
 }
 
 function seedDefaultData() {
-  // 1. Thêm Dự Án / Công Trường mẫu nếu bảng rỗng
   const countProjects = db.prepare('SELECT COUNT(*) as count FROM projects').get().count;
   if (countProjects === 0) {
-    console.log('Đang khởi tạo danh mục Dự Án / Công Trường...');
     const insertProj = db.prepare(`
       INSERT INTO projects (code, name, location, status, notes)
       VALUES (?, ?, ?, ?, ?)
@@ -156,7 +188,6 @@ function seedDefaultData() {
     insertProj.run('DA-ECOPARK', 'Khu đô thị Sinh thái Ven Sông - Phân khu B', 'Hưng Yên', 'ACTIVE', 'Xây dựng hạ tầng kỹ thuật và khu cao tầng');
     insertProj.run('DA-HAIPHONG', 'Nhà xưởng Công nghiệp VSIP Hải Phòng', 'Hải Phòng', 'ACTIVE', 'Thi công móng và kết cấu thép nhà xưởng');
 
-    // Cập nhật các vé cũ (nếu có) vào dự án 1
     db.exec(`
       UPDATE tickets 
       SET project_id = 1, project_name = 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', unit = COALESCE(unit, 'm³')
@@ -164,7 +195,6 @@ function seedDefaultData() {
     `);
   }
 
-  // 2. Thêm Loại vật liệu Thép (Tấn) và Cống bê tông (m dài) nếu chưa có
   const checkThep = db.prepare("SELECT id FROM materials WHERE code = 'THEP-CB400'").get();
   if (!checkThep) {
     const insertMat = db.prepare(`
@@ -176,49 +206,73 @@ function seedDefaultData() {
     insertMat.run('CONG-D1000', 'Cống tròn bê tông ly tâm D1000 H10', 'm', 'Cống thoát nước dài 2.5m/đoạn');
     insertMat.run('CONG-HOP16', 'Cống hộp bê tông cốt thép 1.6x1.6m', 'm', 'Cống hộp chịu lực H30 dài 1.5m/đoạn');
     insertMat.run('XIMANG-ROI', 'Xi măng rời mác PCB40 (Xe bồn)', 'Tấn', 'Xi măng trạm trộn bê tông tươi');
-
-    console.log('Đã bổ sung danh mục vật liệu Thép (Tấn), Cống (m dài), Xi măng (Tấn)!');
   }
 
-  // 3. Thêm Xe chuyên chở Thép và Cống nếu chưa có
-  const checkXeThep = db.prepare("SELECT id FROM vehicles WHERE plate_number = '29C-771.88'").get();
-  if (!checkXeThep) {
-    const matThep = db.prepare("SELECT id FROM materials WHERE code = 'THEP-CB400'").get();
-    const matCong = db.prepare("SELECT id FROM materials WHERE code = 'CONG-D1000'").get();
-    const suppSongDa = db.prepare("SELECT id FROM suppliers WHERE code = 'NCC-SONGDA'").get();
-    const suppHoangLong = db.prepare("SELECT id FROM suppliers WHERE code = 'NCC-HOANGLONG'").get();
-
-    const insertVeh = db.prepare(`
-      INSERT INTO vehicles (plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, default_material_id, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const countSuppliers = db.prepare('SELECT COUNT(*) as count FROM suppliers').get().count;
+  if (countSuppliers === 0) {
+    const insertSupplier = db.prepare(`
+      INSERT INTO suppliers (code, name, phone, contact_person, notes)
+      VALUES (?, ?, ?, ?, ?)
     `);
-
-    // Xe đầu kéo chở thép: 30 Tấn
-    if (matThep && suppHoangLong) {
-      insertVeh.run(
-        '29C-771.88', 'Đầu kéo mooc sàn chở thép', suppHoangLong.id, 1,
-        12.0, 2.4, 1.5, 30.0, 'Tấn', matThep.id,
-        'Định mức cố định 30.0 Tấn thép cây/chuyến'
-      );
-    }
-
-    // Xe cẩu thùng chở cống bê tông: 12.5 m (5 đốt cống x 2.5m)
-    if (matCong && suppSongDa) {
-      insertVeh.run(
-        '29H-445.67', 'Xe tải gắn cẩu chở cống', suppSongDa.id, 2,
-        8.5, 2.35, 0.8, 12.5, 'm', matCong.id,
-        'Mỗi chuyến chở 5 đốt cống 2.5m = 12.5 mét dài'
-      );
-    }
-
-    console.log('Đã tạo xe mẫu chở Thép (30 Tấn) và Cống bê tông (12.5 m)!');
+    insertSupplier.run('NCC-SONGDA', 'Công ty CP Cung ứng VLXD Sông Đà', '0912.345.678', 'Nguyễn Văn Tuấn', 'Cát bê tông, đá dăm, cống bê tông');
+    insertSupplier.run('NCC-HOANGLONG', 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', '0987.654.321', 'Trần Văn Hùng', 'Đá mỏ Hà Nam, thép Hòa Phát');
+    insertSupplier.run('NCC-TIENPHAT', 'Doanh nghiệp Tư nhân Vận tải Tiến Phát', '0905.112.233', 'Lê Văn Hưng', 'Cát san lấp, đất đắp công trình');
   }
+}
 
-  // Cập nhật các vé cũ (nếu có) có unit chuẩn
-  db.exec(`
-    UPDATE tickets SET unit = 'm³' WHERE unit IS NULL OR unit = '';
-    UPDATE vehicles SET unit = 'm³' WHERE unit IS NULL OR unit = '';
+// Khởi tạo các tài khoản người dùng mặc định (Admin + 3 công trường)
+function seedUsers() {
+  const countUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  if (countUsers > 0) return;
+
+  console.log('Đang khởi tạo danh sách tài khoản phân quyền mặc định...');
+
+  const insertUser = db.prepare(`
+    INSERT INTO users (username, password_hash, full_name, role, project_id, status)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
+
+  // 1. Tài khoản Admin Văn Phòng (quản lý toàn bộ)
+  insertUser.run(
+    'admin',
+    hashPassword('admin@123'),
+    'Quản Trị Viên (Văn Phòng)',
+    'ADMIN',
+    null,
+    'ACTIVE'
+  );
+
+  // 2. Tài khoản Công trường 1 (Cầu Vĩnh Tuy 2)
+  insertUser.run(
+    'congtruong1',
+    hashPassword('123456'),
+    'Trực Cổng - Cầu Vĩnh Tuy 2',
+    'SITE_USER',
+    1,
+    'ACTIVE'
+  );
+
+  // 3. Tài khoản Công trường 2 (KĐT Sinh Thái)
+  insertUser.run(
+    'congtruong2',
+    hashPassword('123456'),
+    'Trực Cổng - KĐT Sinh Thái',
+    'SITE_USER',
+    2,
+    'ACTIVE'
+  );
+
+  // 4. Tài khoản Công trường 3 (VSIP Hải Phòng)
+  insertUser.run(
+    'congtruong3',
+    hashPassword('123456'),
+    'Trực Cổng - VSIP Hải Phòng',
+    'SITE_USER',
+    3,
+    'ACTIVE'
+  );
+
+  console.log('Đã tạo thành công tài khoản: admin, congtruong1, congtruong2, congtruong3!');
 }
 
 // Khởi chạy tạo bảng và nâng cấp
@@ -226,5 +280,7 @@ initSchema();
 
 module.exports = {
   db,
+  hashPassword,
+  verifyPassword,
   initSchema
 };
