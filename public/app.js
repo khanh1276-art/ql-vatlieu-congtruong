@@ -1,30 +1,50 @@
 // Logic tương tác Frontend cho Phần mềm Quản lý Kho Vật Liệu Công Trường
-// Hỗ trợ Đa Dự Án (Multi-project) & Đa Đơn Vị Tính (Tấn, m dài, m³, cái, bao...)
+// Hỗ trợ: Đa Dự Án, Đa Đơn Vị Tính, Phân Quyền Bảo Mật & Khóa Số Liệu Qua Ngày (Time-lock)
 
 const AppState = {
   currentTab: 'checkin',
-  selectedProjectId: '', // Rỗng nghĩa là xem "Tất cả dự án"
+  selectedProjectId: '', // Rỗng nghĩa là xem "Tất cả dự án" (chỉ Admin)
+  currentUser: null,
+  token: localStorage.getItem('auth_token') || '',
   projects: [],
   suppliers: [],
   materials: [],
   vehicles: [],
+  users: [],
   inYardTickets: [],
+  dailyTickets: [],
   activeCheckoutTicket: null,
   hourlyChart: null,
   plateDebounceTimer: null
 };
 
 // ============================================================================
-// 1. KHỞI TẠO & ĐỒNG HỒ THỜI GIAN THỰC
+// 1. API FETCH WRAPPER (TỰ ĐỘNG GẮN TOKEN & BẢO MẬT)
+// ============================================================================
+async function apiFetch(url, options = {}) {
+  const headers = Object.assign({}, options.headers || {});
+  if (AppState.token) {
+    headers['Authorization'] = `Bearer ${AppState.token}`;
+  }
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
+  }
+  return res;
+}
+
+// ============================================================================
+// 2. KHỞI TẠO, ĐỒNG HỒ THỜI GIAN THỰC & XÁC THỰC
 // ============================================================================
 document.addEventListener('DOMContentLoaded', () => {
   startClock();
   initDates();
-  loadInitialData();
+  checkAuth();
 
-  // Tự động làm mới xe trong bãi mỗi 20 giây
+  // Tự động làm mới xe trong bãi mỗi 20 giây nếu đang ở tab vào/ra hoặc dashboard
   setInterval(() => {
-    if (AppState.currentTab === 'checkin' || AppState.currentTab === 'dashboard') {
+    if (AppState.currentUser && (AppState.currentTab === 'checkin' || AppState.currentTab === 'dashboard')) {
       loadInYardTickets(false);
       loadDashboardStats();
     }
@@ -83,6 +103,183 @@ function formatDateForInput(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// ============================================================================
+// 3. XÁC THỰC NGƯỜI DÙNG & PHÂN QUYỀN (AUTHENTICATION & RBAC)
+// ============================================================================
+async function checkAuth() {
+  if (!AppState.token) {
+    handleUnauthorized();
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: { 'Authorization': `Bearer ${AppState.token}` }
+    });
+
+    if (!res.ok) {
+      handleUnauthorized();
+      return;
+    }
+
+    const user = await res.json();
+    onLoginSuccess(user, AppState.token, false);
+  } catch (err) {
+    console.error('Lỗi kiểm tra phiên:', err);
+    handleUnauthorized();
+  }
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errorDiv = document.getElementById('loginError');
+  const btn = document.getElementById('btnLoginSubmit');
+
+  errorDiv.classList.add('hidden');
+  errorDiv.textContent = '';
+  btn.disabled = true;
+  btn.innerHTML = '<span>⏳ Đang xác thực...</span>';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Đăng nhập không thành công');
+    }
+
+    onLoginSuccess(data.user, data.token, true);
+  } catch (err) {
+    errorDiv.textContent = err.message;
+    errorDiv.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>ĐĂNG NHẬP HỆ THỐNG</span>';
+  }
+}
+
+function quickFillLogin(username, password) {
+  const uInput = document.getElementById('loginUsername');
+  const pInput = document.getElementById('loginPassword');
+  if (uInput) uInput.value = username;
+  if (pInput) pInput.value = password;
+  const form = document.getElementById('loginForm');
+  if (form) form.requestSubmit();
+}
+
+function onLoginSuccess(user, token, showGreeting = false) {
+  AppState.currentUser = user;
+  AppState.token = token;
+  localStorage.setItem('auth_token', token);
+
+  const overlay = document.getElementById('loginOverlay');
+  if (overlay) overlay.classList.add('hidden');
+
+  applyUserRolePermissions(user);
+  loadInitialData();
+
+  if (showGreeting) {
+    const roleTitle = user.role === 'ADMIN' ? 'Admin Văn Phòng' : `Công Trường (${user.project_name || 'Dự án'})`;
+    showToast(`✓ Xin chào ${user.full_name} [${roleTitle}]!`, 'success');
+  }
+}
+
+async function handleLogout() {
+  if (!confirm('Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?')) return;
+  try {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AppState.token}` }
+    });
+  } catch (e) {
+    // Bỏ qua lỗi mạng khi logout
+  }
+  handleUnauthorized();
+  showToast('Đã đăng xuất tài khoản', 'info');
+}
+
+function handleUnauthorized() {
+  AppState.currentUser = null;
+  AppState.token = '';
+  localStorage.removeItem('auth_token');
+
+  const overlay = document.getElementById('loginOverlay');
+  if (overlay) overlay.classList.remove('hidden');
+
+  const form = document.getElementById('loginForm');
+  if (form) form.reset();
+
+  const errorDiv = document.getElementById('loginError');
+  if (errorDiv) errorDiv.classList.add('hidden');
+
+  // Khôi phục giao diện mặc định
+  const uName = document.getElementById('userDisplayName');
+  if (uName) uName.textContent = 'Chưa đăng nhập';
+  const uBadge = document.getElementById('userRoleBadge');
+  if (uBadge) uBadge.textContent = 'Khách';
+}
+
+function applyUserRolePermissions(user) {
+  // 1. Tên hiển thị & Vai trò
+  const uName = document.getElementById('userDisplayName');
+  if (uName) uName.textContent = user.full_name || user.username;
+
+  const uBadge = document.getElementById('userRoleBadge');
+  if (uBadge) {
+    if (user.role === 'ADMIN') {
+      uBadge.textContent = '👑 Admin Văn Phòng';
+      uBadge.className = 'text-[10px] text-amber-400 font-semibold leading-tight';
+    } else {
+      uBadge.textContent = `🚚 ${user.project_name || 'Cán Bộ Công Trường'}`;
+      uBadge.className = 'text-[10px] text-blue-300 font-semibold leading-tight';
+    }
+  }
+
+  // 2. Khung dự án trên Header
+  const scopeBox = document.getElementById('projectHeaderScopeBox');
+  if (scopeBox) {
+    if (user.role === 'ADMIN') {
+      scopeBox.innerHTML = `
+        <span class="text-slate-400 text-xs font-medium">Dự án:</span>
+        <select id="headerProjectSelect" onchange="handleHeaderProjectChange()"
+          class="bg-slate-900 text-white text-xs font-semibold rounded px-2 py-1 border border-slate-700 focus:outline-none focus:border-blue-500">
+        </select>
+      `;
+    } else {
+      // Công trường bị khóa cố định vào đúng dự án của mình
+      AppState.selectedProjectId = user.project_id || '';
+      scopeBox.innerHTML = `
+        <span class="text-slate-400 text-xs font-medium">Dự án trực thuộc:</span>
+        <span class="text-xs font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800">
+          🏗️ ${escapeHtml(user.project_name || 'Công trường phụ trách')}
+        </span>
+      `;
+    }
+  }
+
+  // 3. Tab Cấu hình & Tài khoản (Chỉ Admin mới có)
+  const navSettings = document.getElementById('navSettingsTab');
+  if (navSettings) {
+    if (user.role === 'ADMIN') {
+      navSettings.classList.remove('hidden');
+    } else {
+      navSettings.classList.add('hidden');
+      if (AppState.currentTab === 'settings') {
+        switchTab('checkin');
+      }
+    }
+  }
+}
+
+// ============================================================================
+// 4. NẠP DỮ LIỆU BAN ĐẦU
+// ============================================================================
 async function loadInitialData() {
   await Promise.all([
     loadProjects(),
@@ -96,11 +293,11 @@ async function loadInitialData() {
 }
 
 // ============================================================================
-// 2. QUẢN LÝ DỰ ÁN & BỘ CHỌN DỰ ÁN (PROJECT SWITCHER)
+// 5. QUẢN LÝ DỰ ÁN & BỘ CHỌN DỰ ÁN (PROJECT SWITCHER)
 // ============================================================================
 async function loadProjects() {
   try {
-    const res = await fetch('/api/projects');
+    const res = await apiFetch('/api/projects');
     AppState.projects = await res.json();
     populateProjectDropdowns();
   } catch (err) {
@@ -109,11 +306,14 @@ async function loadProjects() {
 }
 
 function populateProjectDropdowns() {
+  const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
+
   const headerSel = document.getElementById('headerProjectSelect');
   const checkinSel = document.getElementById('checkin_project');
   const dailySel = document.getElementById('dailyProjectFilter');
   const cumSel = document.getElementById('cumProjectFilter');
   const vehSel = document.getElementById('veh_project');
+  const usrProjSel = document.getElementById('usr_project');
 
   const optionsFilter = '<option value="">-- Tất cả dự án --</option>' +
     AppState.projects.map(p => `<option value="${p.id}" ${AppState.selectedProjectId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
@@ -122,10 +322,36 @@ function populateProjectDropdowns() {
     AppState.projects.map(p => `<option value="${p.id}" ${AppState.selectedProjectId == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
 
   if (headerSel) headerSel.innerHTML = optionsFilter;
-  if (dailySel) dailySel.innerHTML = optionsFilter;
-  if (cumSel) cumSel.innerHTML = optionsFilter;
+  if (dailySel) {
+    dailySel.innerHTML = optionsFilter;
+    if (!isAdmin && AppState.currentUser?.project_id) {
+      dailySel.value = AppState.currentUser.project_id;
+      dailySel.disabled = true;
+    } else {
+      dailySel.disabled = false;
+    }
+  }
+  if (cumSel) {
+    cumSel.innerHTML = optionsFilter;
+    if (!isAdmin && AppState.currentUser?.project_id) {
+      cumSel.value = AppState.currentUser.project_id;
+      cumSel.disabled = true;
+    } else {
+      cumSel.disabled = false;
+    }
+  }
   if (vehSel) vehSel.innerHTML = '<option value="">-- Chọn dự án thường trực --</option>' + AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
-  if (checkinSel) checkinSel.innerHTML = optionsRequired;
+  if (usrProjSel) usrProjSel.innerHTML = '<option value="">-- Chọn dự án phân công --</option>' + AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  if (checkinSel) {
+    checkinSel.innerHTML = optionsRequired;
+    if (!isAdmin && AppState.currentUser?.project_id) {
+      checkinSel.value = AppState.currentUser.project_id;
+      checkinSel.disabled = true;
+    } else {
+      checkinSel.disabled = false;
+    }
+  }
 }
 
 function handleHeaderProjectChange() {
@@ -155,9 +381,15 @@ function handleHeaderProjectChange() {
 }
 
 // ============================================================================
-// 3. CHUYỂN TAB VÀ ĐIỀU HƯỚNG
+// 6. CHUYỂN TAB VÀ ĐIỀU HƯỚNG
 // ============================================================================
 function switchTab(tabId) {
+  // Chặn Site User vào tab Cấu hình
+  if (tabId === 'settings' && AppState.currentUser?.role !== 'ADMIN') {
+    showToast('Tài khoản công trường không có quyền truy cập Cấu hình & Quản lý', 'error');
+    return;
+  }
+
   AppState.currentTab = tabId;
 
   document.querySelectorAll('.nav-tab').forEach((btn) => {
@@ -185,20 +417,20 @@ function switchTab(tabId) {
   } else if (tabId === 'cumulative') {
     loadCumulativeReport();
   } else if (tabId === 'settings') {
-    renderSettingsProjects();
+    switchSettingsSubTab('users');
   }
 }
 
 // ============================================================================
-// 4. NẠP DANH MỤC CƠ BẢN (SUPPLIERS, MATERIALS, VEHICLES)
+// 7. NẠP DANH MỤC CƠ BẢN (SUPPLIERS, MATERIALS, VEHICLES)
 // ============================================================================
 async function loadSuppliers() {
   try {
-    const res = await fetch('/api/suppliers');
+    const res = await apiFetch('/api/suppliers');
     AppState.suppliers = await res.json();
     populateSupplierDropdowns();
   } catch (err) {
-    console.error('Lỗi tải danh sách nhà cung cấp:', err);
+    console.error('Lỗi tải danh mục nhà cung cấp:', err);
   }
 }
 
@@ -207,12 +439,11 @@ function populateSupplierDropdowns() {
   const vehSel = document.getElementById('veh_supplier');
   const cumSel = document.getElementById('cumSupplierFilter');
 
-  const optionsHtml = '<option value="">-- Chọn nhà cung cấp --</option>' +
+  const options = '<option value="">-- Chọn nhà cung cấp --</option>' +
     AppState.suppliers.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
 
-  if (checkinSel) checkinSel.innerHTML = optionsHtml;
-  if (vehSel) vehSel.innerHTML = optionsHtml;
-
+  if (checkinSel) checkinSel.innerHTML = options;
+  if (vehSel) vehSel.innerHTML = options;
   if (cumSel) {
     cumSel.innerHTML = '<option value="">-- Tất cả nhà cung cấp --</option>' +
       AppState.suppliers.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
@@ -221,7 +452,7 @@ function populateSupplierDropdowns() {
 
 async function loadMaterials() {
   try {
-    const res = await fetch('/api/materials');
+    const res = await apiFetch('/api/materials');
     AppState.materials = await res.json();
     populateMaterialDropdowns();
   } catch (err) {
@@ -234,12 +465,11 @@ function populateMaterialDropdowns() {
   const vehSel = document.getElementById('veh_material');
   const cumSel = document.getElementById('cumMaterialFilter');
 
-  const optionsHtml = '<option value="">-- Chọn loại vật liệu --</option>' +
-    AppState.materials.map(m => `<option value="${m.id}">${escapeHtml(m.name)} (ĐVT: ${m.unit || 'm³'})</option>`).join('');
+  const options = '<option value="">-- Chọn loại vật liệu --</option>' +
+    AppState.materials.map(m => `<option value="${m.id}" data-unit="${escapeHtml(m.unit || 'm³')}">${escapeHtml(m.name)} (${escapeHtml(m.unit || 'm³')})</option>`).join('');
 
-  if (checkinSel) checkinSel.innerHTML = optionsHtml;
-  if (vehSel) vehSel.innerHTML = optionsHtml;
-
+  if (checkinSel) checkinSel.innerHTML = options;
+  if (vehSel) vehSel.innerHTML = options;
   if (cumSel) {
     cumSel.innerHTML = '<option value="">-- Tất cả vật liệu --</option>' +
       AppState.materials.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
@@ -248,7 +478,7 @@ function populateMaterialDropdowns() {
 
 async function loadVehicles() {
   try {
-    const res = await fetch('/api/vehicles');
+    const res = await apiFetch('/api/vehicles');
     AppState.vehicles = await res.json();
   } catch (err) {
     console.error('Lỗi tải danh mục xe:', err);
@@ -256,184 +486,201 @@ async function loadVehicles() {
 }
 
 // ============================================================================
-// 5. LOGIC CHECK-IN & TỰ ĐỘNG ĐỔI ĐƠN VỊ TÍNH (TẤN, M DÀI, M³...)
+// 8. FORM CHECK-IN: GỢI Ý BIỂN SỐ & TÍNH TOÁN QUY CÁCH
 // ============================================================================
-function handleCheckinMaterialChange() {
-  const matId = document.getElementById('checkin_material').value;
-  const mat = AppState.materials.find(m => m.id == matId);
-  const unit = mat ? (mat.unit || 'm³') : 'm³';
+function handlePlateInput(e) {
+  const query = e.target.value.trim().toUpperCase();
+  e.target.value = query;
 
-  // Cập nhật nhãn đơn vị tính trên các ô khối lượng
-  const stdBadge = document.getElementById('checkinStdUnitBadge');
-  const actBadge = document.getElementById('checkinActualUnitBadge');
-  if (stdBadge) stdBadge.textContent = unit;
-  if (actBadge) actBadge.textContent = unit;
-}
-
-function handlePlateInput(val) {
   clearTimeout(AppState.plateDebounceTimer);
-  const cleanVal = val.trim().toUpperCase();
+  const box = document.getElementById('plateSuggestions');
 
-  const suggestionsBox = document.getElementById('plateSuggestions');
-  const hintEl = document.getElementById('plateHint');
-
-  if (!cleanVal) {
-    suggestionsBox.classList.add('hidden');
-    hintEl.textContent = 'Gõ biển số để hệ thống tự động điền quy cách xe đã lưu';
+  if (query.length < 2) {
+    box.classList.add('hidden');
     return;
   }
 
-  const matches = AppState.vehicles.filter(v => v.plate_number.toUpperCase().includes(cleanVal));
+  AppState.plateDebounceTimer = setTimeout(() => {
+    const matches = AppState.vehicles.filter(v => v.plate_number.includes(query)).slice(0, 6);
+    if (matches.length === 0) {
+      box.classList.add('hidden');
+      return;
+    }
 
-  if (matches.length > 0) {
-    suggestionsBox.innerHTML = matches.map(v => `
-      <div onclick="selectVehicleByPlate('${v.plate_number}')" 
-        class="px-3.5 py-2 hover:bg-blue-50 cursor-pointer border-b border-slate-100 flex items-center justify-between">
+    box.innerHTML = matches.map(v => `
+      <div onclick="selectVehicleSuggestion('${v.plate_number}')"
+        class="px-3 py-2 text-xs hover:bg-blue-50 cursor-pointer border-b border-slate-100 flex items-center justify-between">
         <div>
-          <span class="font-mono font-bold text-blue-700">${v.plate_number}</span>
-          <span class="text-xs text-slate-500 ml-2">(${v.model_type || 'Xe ben/tải'})</span>
+          <span class="font-mono font-bold text-slate-800">${v.plate_number}</span>
+          <span class="text-slate-400 ml-1">(${escapeHtml(v.supplier_name || 'Chưa gán NCC')})</span>
         </div>
         <div class="text-right">
-          <span class="text-xs font-bold text-slate-800">${v.standard_volume} ${v.unit || 'm³'}</span>
-          <span class="text-[10px] text-slate-400 block">${escapeHtml(v.supplier_name || '')}</span>
+          <span class="font-bold text-blue-700">${v.standard_volume.toFixed(2)} ${v.unit || 'm³'}</span>
         </div>
       </div>
     `).join('');
-    suggestionsBox.classList.remove('hidden');
-  } else {
-    suggestionsBox.classList.add('hidden');
-    hintEl.innerHTML = `<span class="text-amber-600 font-semibold">Xe mới chưa có trong danh mục.</span> Hệ thống sẽ tự động lưu quy cách khi bạn bấm Xác nhận vào!`;
-  }
+    box.classList.remove('hidden');
+  }, 150);
 }
 
-function selectVehicleByPlate(plate) {
+function selectVehicleSuggestion(plate) {
   const v = AppState.vehicles.find(item => item.plate_number === plate);
+  const box = document.getElementById('plateSuggestions');
+  box.classList.add('hidden');
+
   if (!v) return;
 
   document.getElementById('checkin_plate').value = v.plate_number;
-  document.getElementById('checkin_model').value = v.model_type || '';
-  if (v.project_id) document.getElementById('checkin_project').value = v.project_id;
-  if (v.supplier_id) document.getElementById('checkin_supplier').value = v.supplier_id;
-  if (v.default_material_id) {
-    document.getElementById('checkin_material').value = v.default_material_id;
-    handleCheckinMaterialChange();
+
+  // Điền NCC nếu có
+  if (v.supplier_id) {
+    document.getElementById('checkin_supplier').value = v.supplier_id;
   }
 
+  // Điền Dự án nếu có và chưa chọn
+  const projSel = document.getElementById('checkin_project');
+  if (v.project_id && (!projSel.value || !projSel.disabled)) {
+    projSel.value = v.project_id;
+  }
+
+  // Điền Vật liệu mặc định nếu có
+  if (v.default_material_id) {
+    const matSel = document.getElementById('checkin_material');
+    matSel.value = v.default_material_id;
+    onMaterialChange();
+  }
+
+  // Điền kích thước & định mức
   document.getElementById('checkin_length').value = v.length || '';
   document.getElementById('checkin_width').value = v.width || '';
   document.getElementById('checkin_height').value = v.height || '';
-  calculateGeoVolume();
-
   document.getElementById('checkin_std_volume').value = v.standard_volume || '';
-  const unit = v.unit || 'm³';
-  document.getElementById('checkinStdUnitBadge').textContent = unit;
-  document.getElementById('checkinActualUnitBadge').textContent = unit;
+  document.getElementById('checkin_unit').value = v.unit || 'm³';
 
-  syncStdVolumeToActual();
+  calcGeoVolume();
 
-  document.getElementById('plateSuggestions').classList.add('hidden');
-  document.getElementById('plateHint').innerHTML = `
-    <span class="text-emerald-700 font-semibold">✓ Đã nạp quy cách xe ${v.plate_number}:</span> 
-    Định mức chuẩn <b class="text-blue-700">${v.standard_volume} ${unit}</b> (${v.supplier_name || 'NCC'})
-  `;
+  const hint = document.getElementById('plateHint');
+  hint.textContent = `✓ Đã khớp xe ${v.plate_number}: Định mức ${v.standard_volume.toFixed(2)} ${v.unit || 'm³'}`;
+  hint.className = 'text-[11px] text-emerald-600 mt-1 font-medium';
 }
 
-function calculateGeoVolume() {
-  const l = parseFloat(document.getElementById('checkin_length').value) || 0;
-  const w = parseFloat(document.getElementById('checkin_width').value) || 0;
-  const h = parseFloat(document.getElementById('checkin_height').value) || 0;
+function onMaterialChange() {
+  const sel = document.getElementById('checkin_material');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.dataset.unit) return;
 
-  const vol = l * w * h;
-  const geoEl = document.getElementById('calculatedGeoVol');
-  if (geoEl) {
-    geoEl.textContent = `Thể tích: ${vol.toFixed(2)} m³`;
-  }
+  const unit = opt.dataset.unit;
+  document.getElementById('checkin_unit').value = unit;
 
-  const matId = document.getElementById('checkin_material').value;
-  const mat = AppState.materials.find(m => m.id == matId);
-  const isCubic = !mat || mat.unit === 'm³';
+  document.getElementById('unitBadgeStd').textContent = unit;
+  document.getElementById('unitBadgeActual').textContent = unit;
 
-  // Chỉ tự động gán sang khối lượng cố định nếu là vật liệu tính theo m³
-  const stdInput = document.getElementById('checkin_std_volume');
-  if (stdInput && !stdInput.value && vol > 0 && isCubic) {
-    stdInput.value = vol.toFixed(2);
-    syncStdVolumeToActual();
-  }
-}
-
-function syncStdVolumeToActual() {
-  const isManual = document.getElementById('checkin_manual_toggle').checked;
-  const stdVol = parseFloat(document.getElementById('checkin_std_volume').value) || 0;
-
-  if (!isManual) {
-    document.getElementById('checkin_actual_volume').value = stdVol > 0 ? stdVol : '';
-  }
+  calcGeoVolume();
 }
 
 function toggleManualAdjustment() {
-  const isManual = document.getElementById('checkin_manual_toggle').checked;
-  const box = document.getElementById('manualAdjustmentBox');
-  const actualInput = document.getElementById('checkin_actual_volume');
-  const stdVol = parseFloat(document.getElementById('checkin_std_volume').value) || 0;
+  const isChecked = document.getElementById('checkin_manual_toggle').checked;
+  const wrap = document.getElementById('manualAdjustWrap');
+  const actualIn = document.getElementById('checkin_actual_volume');
+  const reasonIn = document.getElementById('checkin_adjust_reason');
 
-  if (isManual) {
-    box.classList.remove('hidden');
-    if (!actualInput.value && stdVol > 0) {
-      actualInput.value = stdVol;
+  if (isChecked) {
+    wrap.classList.remove('hidden');
+    actualIn.setAttribute('required', 'required');
+    reasonIn.setAttribute('required', 'required');
+    if (!actualIn.value) {
+      actualIn.value = document.getElementById('checkin_std_volume').value || '';
     }
-    actualInput.focus();
   } else {
-    box.classList.add('hidden');
-    actualInput.value = stdVol > 0 ? stdVol : '';
-    document.getElementById('checkin_adjust_reason').value = '';
+    wrap.classList.add('hidden');
+    actualIn.removeAttribute('required');
+    reasonIn.removeAttribute('required');
   }
 }
 
-async function handleCheckIn(event) {
+function calcGeoVolume() {
+  const l = parseFloat(document.getElementById('checkin_length').value) || 0;
+  const w = parseFloat(document.getElementById('checkin_width').value) || 0;
+  const h = parseFloat(document.getElementById('checkin_height').value) || 0;
+  const vol = l * w * h;
+
+  const geoLabel = document.getElementById('calculatedGeoVol');
+  const unit = document.getElementById('checkin_unit').value || 'm³';
+
+  if (vol > 0) {
+    geoLabel.textContent = `Thể tích: ${vol.toFixed(2)} m³`;
+    const stdIn = document.getElementById('checkin_std_volume');
+    if (!stdIn.value && unit === 'm³') {
+      stdIn.value = vol.toFixed(2);
+    }
+  } else {
+    geoLabel.textContent = 'Thể tích: 0.00 m³';
+  }
+}
+
+// ============================================================================
+// 9. CHECK-IN XE VÀO CỔNG
+// ============================================================================
+async function submitCheckIn(event) {
   event.preventDefault();
 
-  const projectId = document.getElementById('checkin_project').value;
   const plate = document.getElementById('checkin_plate').value.trim().toUpperCase();
-  const model = document.getElementById('checkin_model').value.trim();
+  const projectId = document.getElementById('checkin_project').value;
   const supplierId = document.getElementById('checkin_supplier').value;
   const materialId = document.getElementById('checkin_material').value;
+  const unit = document.getElementById('checkin_unit').value || 'm³';
 
   const length = parseFloat(document.getElementById('checkin_length').value) || 0;
   const width = parseFloat(document.getElementById('checkin_width').value) || 0;
   const height = parseFloat(document.getElementById('checkin_height').value) || 0;
   const stdVolume = parseFloat(document.getElementById('checkin_std_volume').value) || 0;
 
-  const mat = AppState.materials.find(m => m.id == materialId);
-  const unit = mat ? (mat.unit || 'm³') : 'm³';
-
   const isManual = document.getElementById('checkin_manual_toggle').checked;
-  let actualVolume = stdVolume;
-  let adjustReason = '';
-
-  if (isManual) {
-    actualVolume = parseFloat(document.getElementById('checkin_actual_volume').value) || 0;
-    adjustReason = document.getElementById('checkin_adjust_reason').value.trim();
-    if (actualVolume <= 0) {
-      showToast(`Khối lượng nghiệm thu thủ công phải lớn hơn 0 ${unit}`, 'error');
-      return;
-    }
-  }
-
+  const actualVolume = isManual ? (parseFloat(document.getElementById('checkin_actual_volume').value) || 0) : stdVolume;
+  const adjustReason = isManual ? document.getElementById('checkin_adjust_reason').value.trim() : '';
   const notes = document.getElementById('checkin_notes').value.trim();
 
+  if (!plate) {
+    showToast('Vui lòng nhập biển số xe', 'error');
+    return;
+  }
+  if (!projectId) {
+    showToast('Vui lòng chọn Dự án tiếp nhận', 'error');
+    return;
+  }
+  if (!supplierId) {
+    showToast('Vui lòng chọn Nhà cung cấp', 'error');
+    return;
+  }
+  if (!materialId) {
+    showToast('Vui lòng chọn Loại vật liệu', 'error');
+    return;
+  }
+  if (stdVolume <= 0) {
+    showToast(`Định mức quy chuẩn theo xe phải lớn hơn 0 ${unit}`, 'error');
+    return;
+  }
+  if (actualVolume <= 0) {
+    showToast(`Khối lượng nghiệm thu phải lớn hơn 0 ${unit}`, 'error');
+    return;
+  }
+  if (isManual && !adjustReason) {
+    showToast('Vui lòng ghi rõ lý do điều chỉnh khi có sai khác so với định mức', 'error');
+    return;
+  }
+
   const payload = {
-    project_id: projectId ? parseInt(projectId, 10) : null,
     plate_number: plate,
-    model_type: model,
-    supplier_id: supplierId ? parseInt(supplierId, 10) : null,
-    material_id: materialId ? parseInt(materialId, 10) : null,
+    project_id: parseInt(projectId, 10),
+    supplier_id: parseInt(supplierId, 10),
+    material_id: parseInt(materialId, 10),
     unit,
     length,
     width,
     height,
     standard_volume: stdVolume,
     actual_volume: actualVolume,
-    is_manual_adjusted: isManual,
+    is_manual_adjusted: isManual ? 1 : 0,
     adjustment_reason: adjustReason,
     notes
   };
@@ -443,7 +690,7 @@ async function handleCheckIn(event) {
   btn.innerHTML = '<span>⏳ Đang ghi nhận...</span>';
 
   try {
-    const res = await fetch('/api/tickets/checkin', {
+    const res = await apiFetch('/api/tickets/checkin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -460,7 +707,9 @@ async function handleCheckIn(event) {
 
     // Reset form
     document.getElementById('checkInForm').reset();
-    if (AppState.selectedProjectId) {
+    if (AppState.currentUser?.role === 'SITE_USER') {
+      document.getElementById('checkin_project').value = AppState.currentUser.project_id;
+    } else if (AppState.selectedProjectId) {
       document.getElementById('checkin_project').value = AppState.selectedProjectId;
     }
     document.getElementById('checkin_manual_toggle').checked = false;
@@ -482,7 +731,7 @@ async function handleCheckIn(event) {
 }
 
 // ============================================================================
-// 6. GIÁM SÁT XE TRONG BÃI & XÁC NHẬN RA (CHECK-OUT)
+// 10. GIÁM SÁT XE TRONG BÃI & XÁC NHẬN RA (CHECK-OUT)
 // ============================================================================
 async function loadInYardTickets(showLoading = true) {
   const container = document.getElementById('inYardContainer');
@@ -495,7 +744,7 @@ async function loadInYardTickets(showLoading = true) {
     if (AppState.selectedProjectId) {
       url += `?projectId=${AppState.selectedProjectId}`;
     }
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const tickets = await res.json();
     AppState.inYardTickets = tickets;
 
@@ -520,43 +769,56 @@ async function loadInYardTickets(showLoading = true) {
     }
 
     container.innerHTML = tickets.map((t) => {
-      const durationMin = calculateDurationMinutes(t.time_in);
-      const unit = t.unit || 'm³';
-      const adjustBadge = t.is_manual_adjusted
-        ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-amber-100 text-amber-800 border border-amber-300">Vơi/Ngọn: ${t.actual_volume} ${unit}</span>`
-        : `<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-blue-100 text-blue-800">Quy chuẩn: ${t.standard_volume} ${unit}</span>`;
+      const dim = (t.length > 0 && t.width > 0 && t.height > 0)
+        ? `${t.length}x${t.width}x${t.height}m`
+        : 'Quy chuẩn';
+
+      const adjustNotice = t.is_manual_adjusted
+        ? `<div class="mt-1 text-[11px] text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+             ⚠️ Điều chỉnh: ${t.actual_volume} ${t.unit || 'm³'} (${escapeHtml(t.adjustment_reason || 'Khác quy chuẩn')})
+           </div>`
+        : '';
 
       return `
-        <div class="p-4 rounded-xl border border-slate-200 bg-white hover:border-blue-400 shadow-sm transition flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div class="space-y-1">
-            <div class="flex items-center space-x-2 flex-wrap gap-y-1">
-              <span class="license-plate-badge text-sm">${t.plate_number}</span>
-              <span class="text-xs font-bold text-slate-700">${escapeHtml(t.material_name)}</span>
-              ${adjustBadge}
-              <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border">🏗️ ${escapeHtml(t.project_name || 'Dự án')}</span>
+        <div class="p-3.5 bg-slate-50 hover:bg-blue-50/50 rounded-xl border border-slate-200 transition flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-mono font-bold text-base text-slate-900">${t.plate_number}</span>
+              <span class="px-2 py-0.5 text-[10px] font-mono font-semibold rounded bg-blue-100 text-blue-800">
+                ${formatShortTime(t.time_in)}
+              </span>
             </div>
 
-            <div class="text-xs text-slate-600 font-medium">
-              <span>🏢 ${escapeHtml(t.supplier_name)}</span>
+            <div class="text-xs space-y-1 text-slate-600">
+              <div class="flex items-center space-x-1">
+                <span class="text-slate-400">🏗️</span>
+                <span class="font-semibold text-slate-800 truncate">${escapeHtml(t.project_name || 'Dự án')}</span>
+              </div>
+              <div class="flex items-center space-x-1">
+                <span class="text-slate-400">🧱</span>
+                <span class="font-bold text-blue-700">${escapeHtml(t.material_name)}</span>
+                <span class="text-[11px] text-slate-500">(${escapeHtml(t.supplier_name)})</span>
+              </div>
+              <div class="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200">
+                <span>KT: ${dim}</span>
+                <span class="font-bold text-slate-900 font-mono text-xs">
+                  ${t.actual_volume.toFixed(2)} ${t.unit || 'm³'}
+                </span>
+              </div>
             </div>
 
-            <div class="flex items-center space-x-3 text-[11px] text-slate-500 font-mono">
-              <span>⏰ Vào: <b>${formatShortTime(t.time_in)}</b></span>
-              <span class="text-amber-700 font-sans font-semibold">⏳ Đã ở trong bãi: <b>${durationMin}</b></span>
-            </div>
-
-            ${t.notes ? `<div class="text-[11px] text-slate-400 italic">📝 ${escapeHtml(t.notes)}</div>` : ''}
+            ${adjustNotice}
           </div>
 
-          <div class="flex items-center space-x-2 sm:flex-col sm:space-x-0 sm:space-y-2 justify-end">
-            <button onclick="openCheckOutModal(${t.id})" 
-              class="flex-1 sm:flex-none px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow transition flex items-center justify-center space-x-1">
-              <span>🏁</span>
-              <span>XÁC NHẬN RA</span>
+          <div class="mt-3 pt-2 border-t border-slate-200/80 flex items-center space-x-2">
+            <button onclick="fetchAndShowTicket(${t.id})"
+              class="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 transition">
+              🖨️ In Phiếu
             </button>
-            <button onclick="fetchAndShowTicket(${t.id})" 
-              class="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-medium">
-              In phiếu
+            <button onclick="openCheckOutModal(${t.id})"
+              class="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm transition flex items-center justify-center space-x-1">
+              <span>🏁</span>
+              <span>Xác Nhận Ra Cổng</span>
             </button>
           </div>
         </div>
@@ -565,75 +827,55 @@ async function loadInYardTickets(showLoading = true) {
 
   } catch (err) {
     console.error('Lỗi nạp xe trong bãi:', err);
+    if (container) {
+      container.innerHTML = '<div class="py-8 text-center text-red-500 text-xs">Lỗi nạp danh sách xe trong bãi</div>';
+    }
   }
-}
-
-function calculateDurationMinutes(timeInStr) {
-  const inTime = new Date(timeInStr.replace(' ', 'T'));
-  const now = new Date();
-  const diffMs = now - inTime;
-  if (isNaN(diffMs) || diffMs < 0) return 'Vừa vào';
-
-  const totalMin = Math.floor(diffMs / (1000 * 60));
-  if (totalMin < 60) {
-    return `${totalMin} phút`;
-  }
-  const hours = Math.floor(totalMin / 60);
-  const min = totalMin % 60;
-  return `${hours}h ${min}p`;
-}
-
-function formatShortTime(timeStr) {
-  if (!timeStr) return '--:--';
-  const parts = timeStr.split(' ');
-  return parts.length > 1 ? parts[1].substring(0, 5) : timeStr;
 }
 
 function openCheckOutModal(ticketId) {
-  const ticket = AppState.inYardTickets.find(t => t.id === ticketId);
-  if (!ticket) return;
+  const t = AppState.inYardTickets.find(item => item.id === ticketId);
+  if (!t) return;
 
-  AppState.activeCheckoutTicket = ticket;
+  AppState.activeCheckoutTicket = t;
 
-  document.getElementById('coutTicketCode').textContent = ticket.ticket_code;
-  document.getElementById('coutProject').textContent = ticket.project_name || 'Công trường';
-  document.getElementById('coutPlate').textContent = ticket.plate_number;
-  document.getElementById('coutSupplier').textContent = ticket.supplier_name;
-  document.getElementById('coutMaterial').textContent = ticket.material_name;
-  document.getElementById('coutTimeIn').textContent = ticket.time_in;
-
-  const now = new Date();
-  document.getElementById('coutTimeOut').value = getLocalDateTime(now);
-  document.getElementById('coutActualVolume').value = ticket.actual_volume;
-  document.getElementById('coutUnitBadge').textContent = ticket.unit || 'm³';
-  document.getElementById('coutAdjustmentReason').value = ticket.adjustment_reason || '';
+  document.getElementById('coutTicketCode').textContent = t.ticket_code;
+  document.getElementById('coutProject').textContent = t.project_name || '-';
+  document.getElementById('coutPlate').textContent = t.plate_number;
+  document.getElementById('coutSupplier').textContent = t.supplier_name;
+  document.getElementById('coutMaterial').textContent = t.material_name;
+  document.getElementById('coutTimeIn').textContent = t.time_in;
+  document.getElementById('coutTimeOut').value = getLocalDateTime();
+  document.getElementById('coutActualVolume').value = t.actual_volume;
+  document.getElementById('coutUnitBadge').textContent = t.unit || 'm³';
+  document.getElementById('coutAdjustmentReason').value = t.adjustment_reason || '';
   document.getElementById('coutNotes').value = '';
 
   document.getElementById('checkOutModal').classList.remove('hidden');
 }
 
 function closeCheckOutModal() {
-  document.getElementById('checkOutModal').classList.add('hidden');
   AppState.activeCheckoutTicket = null;
+  document.getElementById('checkOutModal').classList.add('hidden');
 }
 
 async function submitCheckOut() {
   if (!AppState.activeCheckoutTicket) return;
-  const id = AppState.activeCheckoutTicket.id;
-  const unit = AppState.activeCheckoutTicket.unit || 'm³';
 
-  const timeOut = document.getElementById('coutTimeOut').value;
-  const actualVolume = parseFloat(document.getElementById('coutActualVolume').value) || 0;
+  const id = AppState.activeCheckoutTicket.id;
+  const timeOut = document.getElementById('coutTimeOut').value.trim();
+  const actualVolume = parseFloat(document.getElementById('coutActualVolume').value);
   const adjustmentReason = document.getElementById('coutAdjustmentReason').value.trim();
   const notes = document.getElementById('coutNotes').value.trim();
+  const unit = AppState.activeCheckoutTicket.unit || 'm³';
 
-  if (actualVolume <= 0) {
+  if (isNaN(actualVolume) || actualVolume <= 0) {
     showToast(`Khối lượng thực nhận phải lớn hơn 0 ${unit}`, 'error');
     return;
   }
 
   try {
-    const res = await fetch(`/api/tickets/${id}/checkout`, {
+    const res = await apiFetch(`/api/tickets/${id}/checkout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -661,7 +903,7 @@ async function submitCheckOut() {
 }
 
 // ============================================================================
-// 7. DASHBOARD & BIỂU ĐỒ (CHARTS)
+// 11. DASHBOARD & BIỂU ĐỒ (CHARTS)
 // ============================================================================
 async function loadDashboardStats() {
   try {
@@ -669,7 +911,7 @@ async function loadDashboardStats() {
     if (AppState.selectedProjectId) {
       url += `?projectId=${AppState.selectedProjectId}`;
     }
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const data = await res.json();
 
     const stats = data.stats || {};
@@ -687,7 +929,7 @@ async function loadDashboardStats() {
     const volBox = document.getElementById('dashVolumeByUnitBox');
     if (volBox) {
       if (!data.volumeByUnit || data.volumeByUnit.length === 0) {
-        volBox.innerHTML = `<div>0 phát sinh</div>`;
+        volBox.innerHTML = `<div class="text-slate-400">0 phát sinh</div>`;
       } else {
         volBox.innerHTML = data.volumeByUnit.map(v => `
           <div class="flex justify-between items-center bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
@@ -698,120 +940,67 @@ async function loadDashboardStats() {
       }
     }
 
-    renderDashboardMaterialBreakdown(data.materialBreakdown || []);
-    renderDashboardRecent(data.recentTickets || []);
-    renderHourlyChart(data.hourlyDistribution || []);
+    // Biểu đồ lưu lượng xe theo giờ
+    renderHourlyChart(data.hourly || []);
 
   } catch (err) {
     console.error('Lỗi tải thống kê dashboard:', err);
   }
 }
 
-function renderDashboardMaterialBreakdown(list) {
-  const tbody = document.getElementById('dashMaterialBreakdownTable');
-  if (!tbody) return;
-
-  if (list.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" class="text-center py-6 text-slate-400">Chưa có chuyến nào hôm nay</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = list.map(item => `
-    <tr class="hover:bg-slate-50 transition">
-      <td class="px-3 py-2 font-medium text-slate-800">${escapeHtml(item.material_name)}</td>
-      <td class="px-3 py-2 text-center font-bold text-blue-700">${escapeHtml(item.unit || 'm³')}</td>
-      <td class="px-3 py-2 text-center font-mono font-semibold">${item.trips}</td>
-      <td class="px-3 py-2 text-right font-mono font-bold text-emerald-700">${item.volume.toFixed(2)}</td>
-    </tr>
-  `).join('');
-}
-
-function renderDashboardRecent(tickets) {
-  const tbody = document.getElementById('dashRecentTicketsTable');
-  if (!tbody) return;
-
-  if (tickets.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-slate-400">Chưa có lượt xe nào</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = tickets.map(t => {
-    const statusBadge = t.status === 'IN_YARD'
-      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Trong bãi</span>`
-      : (t.status === 'COMPLETED'
-        ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700">Đã ra</span>`
-        : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Hủy</span>`);
-
-    return `
-      <tr class="hover:bg-slate-50 transition">
-        <td class="px-4 py-3 font-mono font-medium text-slate-600">${t.ticket_code}</td>
-        <td class="px-4 py-3 font-semibold text-slate-800 text-xs">${escapeHtml(t.project_name || '-')}</td>
-        <td class="px-4 py-3 font-mono font-bold text-slate-900">${t.plate_number}</td>
-        <td class="px-4 py-3 text-slate-700 font-medium">${escapeHtml(t.supplier_name)}</td>
-        <td class="px-4 py-3 text-slate-700">${escapeHtml(t.material_name)}</td>
-        <td class="px-4 py-3 text-center font-bold text-blue-700">${escapeHtml(t.unit || 'm³')}</td>
-        <td class="px-4 py-3 text-slate-500 font-mono">${formatShortTime(t.time_in)}</td>
-        <td class="px-4 py-3 text-slate-500 font-mono">${formatShortTime(t.time_out)}</td>
-        <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${t.actual_volume.toFixed(2)}</td>
-        <td class="px-4 py-3 text-center">${statusBadge}</td>
-      </tr>
-    `;
-  }).join('');
-}
-
-function renderHourlyChart(hourly) {
-  const canvas = document.getElementById('hourlyChart');
+function renderHourlyChart(hourlyData) {
+  const canvas = document.getElementById('hourlyTrafficChart');
   if (!canvas) return;
+
+  const labels = [];
+  const counts = [];
+  for (let h = 5; h <= 20; h++) {
+    const pad = String(h).padStart(2, '0');
+    labels.push(`${pad}:00`);
+    const found = hourlyData.find(d => parseInt(d.hour, 10) === h);
+    counts.push(found ? found.count : 0);
+  }
 
   if (AppState.hourlyChart) {
     AppState.hourlyChart.destroy();
   }
 
-  const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00');
-  const tripsData = Array(24).fill(0);
+  if (typeof Chart === 'undefined') return;
 
-  hourly.forEach(h => {
-    const idx = parseInt(h.hour, 10);
-    if (idx >= 0 && idx < 24) {
-      tripsData[idx] = h.trips;
-    }
-  });
-
-  const filteredHours = hours.slice(6, 20);
-  const filteredTrips = tripsData.slice(6, 20);
-
-  AppState.hourlyChart = new Chart(canvas, {
+  const ctx = canvas.getContext('2d');
+  AppState.hourlyChart = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: filteredHours,
+      labels,
       datasets: [{
-        label: 'Số chuyến xe vào',
-        data: filteredTrips,
-        backgroundColor: '#3b82f6',
+        label: 'Lượt xe vào cổng',
+        data: counts,
+        backgroundColor: 'rgba(37, 99, 235, 0.7)',
+        borderColor: 'rgb(37, 99, 235)',
+        borderWidth: 1,
         borderRadius: 4
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false }
+      },
       scales: {
         y: {
           beginAtZero: true,
-          ticks: { stepSize: 1, precision: 0 }
+          ticks: { stepSize: 1 }
         }
-      },
-      plugins: {
-        legend: { display: false }
       }
     }
   });
 }
 
 // ============================================================================
-// 8. BÁO CÁO NHẬT TRÌNH HÀNG NGÀY (DAILY REPORT)
+// 12. NHẬT TRÌNH NGÀY, ĐIỀU CHỈNH PHIẾU & KHÓA SỐ LIỆU QUA NGÀY (TIME-LOCK)
 // ============================================================================
-function setDailyDateToday() {
-  document.getElementById('dailyReportDate').value = getTodayDateStr();
+function handleDailyFilterChange() {
   loadDailyReport();
 }
 
@@ -824,9 +1013,22 @@ async function loadDailyReport() {
   let url = `/api/reports/daily?date=${date}`;
   if (projectId) url += `&projectId=${projectId}`;
 
+  // Kiểm tra quy tắc khóa số liệu: nếu người dùng là SITE_USER và xem ngày cũ -> Hiện thông báo khóa sổ
+  const isSiteUser = AppState.currentUser && AppState.currentUser.role === 'SITE_USER';
+  const isPastDate = date !== getTodayDateStr();
+  const lockNotice = document.getElementById('dailyLockNotice');
+  if (lockNotice) {
+    if (isSiteUser && isPastDate) {
+      lockNotice.classList.remove('hidden');
+    } else {
+      lockNotice.classList.add('hidden');
+    }
+  }
+
   try {
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const data = await res.json();
+    AppState.dailyTickets = data.tickets || [];
 
     const summary = data.summary || {};
 
@@ -835,7 +1037,7 @@ async function loadDailyReport() {
     document.getElementById('dailySuppliersCount').textContent = summary.total_suppliers || 0;
     document.getElementById('dailyVehiclesCount').textContent = summary.total_vehicles || 0;
 
-    document.getElementById('dailyTableRecordCount').textContent = `${data.tickets.length} chuyến xe`;
+    document.getElementById('dailyTableRecordCount').textContent = `${AppState.dailyTickets.length} chuyến xe`;
 
     // Bảng theo Vật liệu & ĐVT
     const matTbody = document.getElementById('dailyByMaterialTable');
@@ -861,15 +1063,15 @@ async function loadDailyReport() {
       `).join('') || `<tr><td colspan="2" class="text-center py-2 text-slate-400">Không có dữ liệu</td></tr>`;
     }
 
-    // Bảng kê chi tiết
+    // Bảng kê chi tiết từng lượt xe
     const ticketsTbody = document.getElementById('dailyTicketsTableBody');
     if (ticketsTbody) {
-      if (data.tickets.length === 0) {
+      if (AppState.dailyTickets.length === 0) {
         ticketsTbody.innerHTML = `<tr><td colspan="14" class="text-center py-10 text-slate-400 font-medium">Không có lượt xe nào ghi nhận trong ngày ${date}</td></tr>`;
         return;
       }
 
-      ticketsTbody.innerHTML = data.tickets.map((t, index) => {
+      ticketsTbody.innerHTML = AppState.dailyTickets.map((t, index) => {
         const adjustBadge = t.is_manual_adjusted
           ? `<span class="text-amber-700 font-semibold" title="${escapeHtml(t.adjustment_reason || '')}">⚠️ ${escapeHtml(t.adjustment_reason || 'Điều chỉnh')}</span>`
           : `<span class="text-slate-400">Chuẩn</span>`;
@@ -879,6 +1081,24 @@ async function loadDailyReport() {
           : (t.status === 'COMPLETED'
             ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700">Đã xong</span>`
             : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Hủy</span>`);
+
+        // Logic phân quyền sửa phiếu:
+        // Admin: Toàn quyền sửa bất kỳ phiếu ngày nào.
+        // Site User: Chỉ được sửa các phiếu trong ngày hôm nay; qua ngày thì khóa sổ!
+        const ticketDate = (t.time_in || '').split(' ')[0];
+        const isTicketToday = ticketDate === getTodayDateStr();
+        const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
+        const canEdit = isAdmin || (isSiteUser && isTicketToday);
+
+        let actionHtml = `<button onclick="fetchAndShowTicket(${t.id})" class="text-blue-600 hover:underline font-semibold" title="In phiếu">🖨️ In</button>`;
+
+        if (t.status !== 'CANCELLED') {
+          if (canEdit) {
+            actionHtml += ` <button onclick="openEditTicketModalById(${t.id})" class="text-amber-600 hover:underline font-semibold ml-2" title="Điều chỉnh thông tin phiếu">✏️ Sửa</button>`;
+          } else if (isSiteUser && !isTicketToday) {
+            actionHtml += ` <span class="text-slate-400 ml-2" title="Số liệu đã khóa sổ qua ngày. Chỉ Admin mới có quyền điều chỉnh!">🔒 Khóa</span>`;
+          }
+        }
 
         return `
           <tr class="hover:bg-slate-50 transition">
@@ -895,8 +1115,8 @@ async function loadDailyReport() {
             <td class="px-3 py-2.5 text-right font-mono font-bold text-emerald-700">${t.actual_volume.toFixed(2)}</td>
             <td class="px-3 py-2.5 text-xs">${adjustBadge}</td>
             <td class="px-3 py-2.5 text-center">${statusBadge}</td>
-            <td class="px-3 py-2.5 text-center no-print">
-              <button onclick="fetchAndShowTicket(${t.id})" class="text-blue-600 hover:underline font-semibold" title="In phiếu">🖨️ In</button>
+            <td class="px-3 py-2.5 text-center no-print whitespace-nowrap">
+              ${actionHtml}
             </td>
           </tr>
         `;
@@ -906,6 +1126,72 @@ async function loadDailyReport() {
   } catch (err) {
     console.error('Lỗi nạp báo cáo ngày:', err);
     showToast('Lỗi khi tải dữ liệu báo cáo ngày', 'error');
+  }
+}
+
+// Modal Điều Chỉnh Phiếu
+function openEditTicketModalById(id) {
+  const ticket = AppState.dailyTickets.find(t => t.id === id);
+  if (!ticket) return;
+
+  document.getElementById('edit_ticket_id').value = ticket.id;
+  document.getElementById('edit_code_label').textContent = ticket.ticket_code;
+  document.getElementById('edit_time_label').textContent = `${ticket.time_in} (Dự án: ${ticket.project_name || '-'})`;
+  document.getElementById('edit_plate').value = ticket.plate_number;
+  document.getElementById('edit_actual_volume').value = ticket.actual_volume;
+  document.getElementById('edit_adjust_reason').value = ticket.adjustment_reason || '';
+  document.getElementById('edit_notes').value = ticket.notes || '';
+
+  document.getElementById('editTicketModal').classList.remove('hidden');
+}
+
+function closeEditTicketModal() {
+  document.getElementById('editTicketModal').classList.add('hidden');
+}
+
+async function saveEditTicket(e) {
+  e.preventDefault();
+  const id = document.getElementById('edit_ticket_id').value;
+  const plate_number = document.getElementById('edit_plate').value.trim().toUpperCase();
+  const actual_volume = parseFloat(document.getElementById('edit_actual_volume').value);
+  const adjustment_reason = document.getElementById('edit_adjust_reason').value.trim();
+  const notes = document.getElementById('edit_notes').value.trim();
+
+  if (!plate_number) {
+    showToast('Biển số xe không được để trống', 'error');
+    return;
+  }
+  if (isNaN(actual_volume) || actual_volume <= 0) {
+    showToast('Khối lượng nghiệm thu phải lớn hơn 0', 'error');
+    return;
+  }
+
+  try {
+    const res = await apiFetch(`/api/tickets/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        plate_number,
+        actual_volume,
+        adjustment_reason,
+        notes,
+        is_manual_adjusted: 1
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Lỗi khi cập nhật phiếu');
+    }
+
+    closeEditTicketModal();
+    showToast(`✓ Đã cập nhật phiếu xe ${data.plate_number} (${data.actual_volume} ${data.unit || 'm³'})`, 'success');
+    loadDailyReport();
+    loadInYardTickets();
+    loadDashboardStats();
+
+  } catch (err) {
+    showToast(err.message, 'error');
   }
 }
 
@@ -921,36 +1207,22 @@ function exportDailyExcel() {
 
   let url = `/api/reports/export-excel?type=daily&date=${date}`;
   if (projectId) url += `&projectId=${projectId}`;
+  if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
   window.location.href = url;
 }
 
 // ============================================================================
-// 9. BÁO CÁO KHỐI LƯỢNG LŨY KẾ (CUMULATIVE REPORT)
+// 13. BÁO CÁO LŨY KẾ & XUẤT FILE EXCEL
 // ============================================================================
-function setCumPreset(preset) {
-  const startInput = document.getElementById('cumStartDate');
-  const endInput = document.getElementById('cumEndDate');
-  const now = new Date();
-  endInput.value = formatDateForInput(now);
-
-  if (preset === 'thisMonth') {
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    startInput.value = formatDateForInput(firstDay);
-  } else if (preset === 'last30Days') {
-    const d = new Date();
-    d.setDate(d.getDate() - 30);
-    startInput.value = formatDateForInput(d);
-  } else if (preset === 'all') {
-    startInput.value = '2026-01-01';
-  }
-
+function handleCumulativeFilterChange() {
   loadCumulativeReport();
 }
 
 async function loadCumulativeReport() {
   const startDate = document.getElementById('cumStartDate').value || getTodayDateStr();
   const endDate = document.getElementById('cumEndDate').value || getTodayDateStr();
-  const projectId = document.getElementById('cumProjectFilter').value || AppState.selectedProjectId;
+  const projSel = document.getElementById('cumProjectFilter');
+  const projectId = projSel ? projSel.value : AppState.selectedProjectId;
   const supplierId = document.getElementById('cumSupplierFilter').value;
   const materialId = document.getElementById('cumMaterialFilter').value;
 
@@ -960,7 +1232,7 @@ async function loadCumulativeReport() {
   if (materialId) url += `&materialId=${materialId}`;
 
   try {
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const data = await res.json();
 
     const summary = data.summary || {};
@@ -1035,19 +1307,21 @@ async function loadCumulativeReport() {
 function exportCumulativeExcel() {
   const startDate = document.getElementById('cumStartDate').value || getTodayDateStr();
   const endDate = document.getElementById('cumEndDate').value || getTodayDateStr();
-  const projectId = document.getElementById('cumProjectFilter').value || AppState.selectedProjectId;
+  const projSel = document.getElementById('cumProjectFilter');
+  const projectId = projSel ? projSel.value : AppState.selectedProjectId;
 
   let url = `/api/reports/export-excel?type=cumulative&startDate=${startDate}&endDate=${endDate}`;
   if (projectId) url += `&projectId=${projectId}`;
+  if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
   window.location.href = url;
 }
 
 // ============================================================================
-// 10. IN PHIẾU KIỂM ĐẾM / XUẤT NHẬP (RECEIPT PRINT)
+// 14. IN PHIẾU KIỂM ĐẾM / XUẤT NHẬP (RECEIPT PRINT)
 // ============================================================================
 async function fetchAndShowTicket(ticketId) {
   try {
-    const res = await fetch(`/api/tickets?search=${ticketId}`);
+    const res = await apiFetch(`/api/tickets?search=${ticketId}`);
     const tickets = await res.json();
     const t = tickets.find(item => item.id === ticketId);
     if (t) {
@@ -1094,7 +1368,7 @@ function closeTicketModal() {
 }
 
 // ============================================================================
-// 11. CẤU HÌNH DANH MỤC (PROJECTS, VEHICLES, MATERIALS, SUPPLIERS)
+// 15. CẤU HÌNH DANH MỤC & QUẢN LÝ TÀI KHOẢN (ADMIN ONLY)
 // ============================================================================
 function switchSettingsSubTab(sub) {
   document.querySelectorAll('.settings-subtab').forEach(btn => {
@@ -1109,13 +1383,179 @@ function switchSettingsSubTab(sub) {
   const activePane = document.getElementById(`settings-${sub}`);
   if (activePane) activePane.classList.remove('hidden');
 
+  if (sub === 'users') loadUsers();
   if (sub === 'projects') renderSettingsProjects();
   if (sub === 'vehicles') renderSettingsVehicles();
   if (sub === 'materials') renderSettingsMaterials();
   if (sub === 'suppliers') renderSettingsSuppliers();
 }
 
-// --- Cấu hình Dự Án ---
+// --- 15.1 Quản Lý Tài Khoản (Users & RBAC) ---
+async function loadUsers() {
+  const tbody = document.getElementById('settingsUsersTable');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Đang tải danh sách tài khoản...</td></tr>`;
+
+  try {
+    const res = await apiFetch('/api/users');
+    AppState.users = await res.json();
+    renderSettingsUsers();
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-red-500">${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+function renderSettingsUsers() {
+  const tbody = document.getElementById('settingsUsersTable');
+  if (!tbody) return;
+
+  if (AppState.users.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Chưa có tài khoản nào</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = AppState.users.map(u => {
+    const isSelf = AppState.currentUser && AppState.currentUser.id === u.id;
+    const roleLabel = u.role === 'ADMIN'
+      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-purple-100 text-purple-800">👑 Admin</span>`
+      : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-800">🚚 Công Trường</span>`;
+    const statusLabel = u.status === 'ACTIVE'
+      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Hoạt động</span>`
+      : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-800">Bị khóa</span>`;
+
+    return `
+      <tr class="hover:bg-slate-50 transition">
+        <td class="px-4 py-3 font-mono font-bold text-slate-800">${escapeHtml(u.username)}</td>
+        <td class="px-4 py-3 font-semibold text-slate-900">${escapeHtml(u.full_name)}</td>
+        <td class="px-4 py-3 text-center">${roleLabel}</td>
+        <td class="px-4 py-3 text-slate-700">${escapeHtml(u.project_name || (u.role === 'ADMIN' ? 'Toàn quyền (Tất cả dự án)' : '-'))}</td>
+        <td class="px-4 py-3 text-center">${statusLabel}</td>
+        <td class="px-4 py-3 text-center space-x-2">
+          <button onclick="editUser(${u.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
+          ${isSelf ? '' : `<button onclick="deleteUser(${u.id}, '${escapeHtml(u.username)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>`}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function openUserModal() {
+  document.getElementById('userForm').reset();
+  document.getElementById('usr_id').value = '';
+  document.getElementById('usr_username').disabled = false;
+  document.getElementById('usrModalTitle').textContent = 'Cấp Tài Khoản Người Dùng Mới';
+  document.getElementById('usrPwdRequired').classList.remove('hidden');
+  document.getElementById('usrPwdHint').classList.add('hidden');
+  document.getElementById('usr_password').setAttribute('required', 'required');
+  handleUserRoleChange();
+  document.getElementById('userModal').classList.remove('hidden');
+}
+
+function closeUserModal() {
+  document.getElementById('userModal').classList.add('hidden');
+}
+
+function handleUserRoleChange() {
+  const role = document.getElementById('usr_role').value;
+  const wrapper = document.getElementById('usrProjectWrapper');
+  const projSelect = document.getElementById('usr_project');
+  if (role === 'ADMIN') {
+    wrapper.classList.add('hidden');
+    projSelect.removeAttribute('required');
+  } else {
+    wrapper.classList.remove('hidden');
+    projSelect.setAttribute('required', 'required');
+  }
+}
+
+function editUser(id) {
+  const u = AppState.users.find(item => item.id === id);
+  if (!u) return;
+
+  document.getElementById('usr_id').value = u.id;
+  document.getElementById('usr_username').value = u.username;
+  document.getElementById('usr_username').disabled = true;
+  document.getElementById('usr_password').value = '';
+  document.getElementById('usr_password').removeAttribute('required');
+  document.getElementById('usrPwdRequired').classList.add('hidden');
+  document.getElementById('usrPwdHint').classList.remove('hidden');
+
+  document.getElementById('usr_fullname').value = u.full_name;
+  document.getElementById('usr_role').value = u.role;
+  document.getElementById('usr_status').value = u.status;
+  document.getElementById('usr_project').value = u.project_id || '';
+
+  handleUserRoleChange();
+
+  document.getElementById('usrModalTitle').textContent = `Chỉnh Sửa Tài Khoản: ${u.username}`;
+  document.getElementById('userModal').classList.remove('hidden');
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const id = document.getElementById('usr_id').value;
+  const username = document.getElementById('usr_username').value.trim().toLowerCase();
+  const password = document.getElementById('usr_password').value;
+  const full_name = document.getElementById('usr_fullname').value.trim();
+  const role = document.getElementById('usr_role').value;
+  const status = document.getElementById('usr_status').value;
+  const project_id = document.getElementById('usr_project').value;
+
+  if (role === 'SITE_USER' && !project_id) {
+    showToast('Vui lòng chọn Dự án phân công cho tài khoản công trường', 'error');
+    return;
+  }
+
+  const payload = {
+    username,
+    full_name,
+    role,
+    status,
+    project_id: role === 'SITE_USER' ? parseInt(project_id, 10) : null
+  };
+
+  if (password) {
+    payload.password = password;
+  }
+
+  try {
+    const url = id ? `/api/users/${id}` : '/api/users';
+    const method = id ? 'PUT' : 'POST';
+
+    const res = await apiFetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi khi lưu tài khoản');
+
+    closeUserModal();
+    showToast(`✓ Đã lưu tài khoản ${data.username}`, 'success');
+    await loadUsers();
+
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`Bạn có chắc chắn muốn xóa tài khoản "${username}"?`)) return;
+
+  try {
+    const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi khi xóa tài khoản');
+
+    showToast(`Đã xóa tài khoản ${username}`, 'success');
+    await loadUsers();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// --- 15.2 Cấu hình Dự Án ---
 function renderSettingsProjects() {
   const tbody = document.getElementById('settingsProjectsTable');
   if (!tbody) return;
@@ -1186,7 +1626,7 @@ async function saveProject(event) {
     const url = id ? `/api/projects/${id}` : '/api/projects';
     const method = id ? 'PUT' : 'POST';
 
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1209,7 +1649,7 @@ async function deleteProject(id, name) {
   if (!confirm(`Bạn có chắc chắn muốn xóa dự án "${name}"?`)) return;
 
   try {
-    const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/projects/${id}`, { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Không thể xóa dự án');
 
@@ -1221,7 +1661,7 @@ async function deleteProject(id, name) {
   }
 }
 
-// --- Cấu hình Xe ---
+// --- 15.3 Cấu hình Xe ---
 function renderSettingsVehicles() {
   const tbody = document.getElementById('settingsVehiclesTable');
   if (!tbody) return;
@@ -1342,17 +1782,17 @@ async function saveVehicle(event) {
     const url = id ? `/api/vehicles/${id}` : '/api/vehicles';
     const method = id ? 'PUT' : 'POST';
 
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Lỗi lưu thông tin xe');
+    if (!res.ok) throw new Error(data.error || 'Lỗi lưu xe');
 
     closeVehicleModal();
-    showToast(`✓ Đã lưu thông tin xe ${data.plate_number}`, 'success');
+    showToast(`✓ Đã lưu xe: ${data.plate_number}`, 'success');
     await loadVehicles();
     renderSettingsVehicles();
 
@@ -1362,11 +1802,12 @@ async function saveVehicle(event) {
 }
 
 async function deleteVehicle(id, plate) {
-  if (!confirm(`Bạn có chắc chắn muốn xóa xe ${plate} khỏi danh mục?`)) return;
+  if (!confirm(`Bạn có chắc chắn muốn xóa xe "${plate}"?`)) return;
 
   try {
-    const res = await fetch(`/api/vehicles/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Không thể xóa xe');
+    const res = await apiFetch(`/api/vehicles/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Không thể xóa xe');
 
     showToast(`Đã xóa xe ${plate}`, 'success');
     await loadVehicles();
@@ -1376,7 +1817,7 @@ async function deleteVehicle(id, plate) {
   }
 }
 
-// --- Cấu hình Loại Vật Liệu (Hỗ trợ nhập hoặc chọn ĐVT) ---
+// --- 15.4 Cấu hình Loại Vật Liệu & ĐVT ---
 function renderSettingsMaterials() {
   const tbody = document.getElementById('settingsMaterialsTable');
   if (!tbody) return;
@@ -1388,12 +1829,15 @@ function renderSettingsMaterials() {
 
   tbody.innerHTML = AppState.materials.map(m => `
     <tr class="hover:bg-slate-50 transition">
-      <td class="px-4 py-3 font-mono text-slate-600 font-semibold">${m.code}</td>
+      <td class="px-4 py-3 font-mono font-semibold text-slate-700">${m.code}</td>
       <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(m.name)}</td>
-      <td class="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/50">${m.unit || 'm³'}</td>
-      <td class="px-4 py-3 text-center font-mono font-semibold">${m.total_trips || 0}</td>
-      <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${(m.cumulative_volume || 0).toFixed(2)} ${m.unit || 'm³'}</td>
-      <td class="px-4 py-3 text-slate-500 text-xs">${escapeHtml(m.description || '')}</td>
+      <td class="px-4 py-3 text-center">
+        <span class="px-2.5 py-1 text-xs font-bold rounded-lg bg-blue-100 text-blue-800 border border-blue-200">
+          ${escapeHtml(m.unit || 'm³')}
+        </span>
+      </td>
+      <td class="px-4 py-3 text-slate-600">${escapeHtml(m.category || 'Vật liệu')}</td>
+      <td class="px-4 py-3 text-slate-400 text-xs">${escapeHtml(m.notes || '')}</td>
       <td class="px-4 py-3 text-center space-x-2">
         <button onclick="editMaterial(${m.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
         <button onclick="deleteMaterial(${m.id}, '${escapeHtml(m.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
@@ -1405,7 +1849,6 @@ function renderSettingsMaterials() {
 function openMaterialModal() {
   document.getElementById('materialForm').reset();
   document.getElementById('mat_id').value = '';
-  document.getElementById('mat_unit').value = 'm³';
   document.getElementById('materialModalTitle').textContent = 'Thêm Loại Vật Liệu Mới';
   document.getElementById('materialModal').classList.remove('hidden');
 }
@@ -1422,7 +1865,8 @@ function editMaterial(id) {
   document.getElementById('mat_name').value = m.name;
   document.getElementById('mat_code').value = m.code;
   document.getElementById('mat_unit').value = m.unit || 'm³';
-  document.getElementById('mat_desc').value = m.description || '';
+  document.getElementById('mat_category').value = m.category || '';
+  document.getElementById('mat_notes').value = m.notes || '';
 
   document.getElementById('materialModalTitle').textContent = `Chỉnh Sửa Vật Liệu: ${m.name}`;
   document.getElementById('materialModal').classList.remove('hidden');
@@ -1433,26 +1877,27 @@ async function saveMaterial(event) {
   const id = document.getElementById('mat_id').value;
   const name = document.getElementById('mat_name').value.trim();
   const code = document.getElementById('mat_code').value.trim();
-  const unit = document.getElementById('mat_unit').value.trim() || 'm³';
-  const desc = document.getElementById('mat_desc').value.trim();
+  const unit = document.getElementById('mat_unit').value.trim();
+  const category = document.getElementById('mat_category').value.trim();
+  const notes = document.getElementById('mat_notes').value.trim();
 
-  const payload = { name, code, unit, description: desc };
+  const payload = { name, code, unit, category, notes };
 
   try {
     const url = id ? `/api/materials/${id}` : '/api/materials';
     const method = id ? 'PUT' : 'POST';
 
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Lỗi lưu loại vật liệu');
+    if (!res.ok) throw new Error(data.error || 'Lỗi lưu vật liệu');
 
     closeMaterialModal();
-    showToast(`✓ Đã lưu vật liệu: ${data.name} (ĐVT: ${data.unit})`, 'success');
+    showToast(`✓ Đã lưu vật liệu: ${data.name} (${data.unit})`, 'success');
     await loadMaterials();
     renderSettingsMaterials();
 
@@ -1465,8 +1910,9 @@ async function deleteMaterial(id, name) {
   if (!confirm(`Bạn có chắc chắn muốn xóa loại vật liệu "${name}"?`)) return;
 
   try {
-    const res = await fetch(`/api/materials/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Không thể xóa vật liệu');
+    const res = await apiFetch(`/api/materials/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Không thể xóa loại vật liệu');
 
     showToast(`Đã xóa vật liệu ${name}`, 'success');
     await loadMaterials();
@@ -1476,23 +1922,22 @@ async function deleteMaterial(id, name) {
   }
 }
 
-// --- Cấu hình Nhà Cung Cấp ---
+// --- 15.5 Cấu hình Nhà Cung Cấp ---
 function renderSettingsSuppliers() {
   const tbody = document.getElementById('settingsSuppliersTable');
   if (!tbody) return;
 
   if (AppState.suppliers.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-slate-400">Chưa có nhà cung cấp nào</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-slate-400">Chưa có nhà cung cấp nào</td></tr>`;
     return;
   }
 
   tbody.innerHTML = AppState.suppliers.map(s => `
     <tr class="hover:bg-slate-50 transition">
-      <td class="px-4 py-3 font-mono text-slate-600 font-semibold">${s.code}</td>
+      <td class="px-4 py-3 font-mono font-semibold text-slate-700">${s.code}</td>
       <td class="px-4 py-3 font-bold text-slate-900">${escapeHtml(s.name)}</td>
-      <td class="px-4 py-3 font-mono text-slate-600">${s.phone || '-'}</td>
+      <td class="px-4 py-3 text-slate-600 font-mono">${escapeHtml(s.phone || '-')}</td>
       <td class="px-4 py-3 text-slate-700">${escapeHtml(s.contact_person || '-')}</td>
-      <td class="px-4 py-3 text-center font-mono font-semibold">${s.vehicle_count || 0}</td>
       <td class="px-4 py-3 text-center font-mono font-semibold">${s.total_trips || 0}</td>
       <td class="px-4 py-3 text-slate-400 text-xs">${escapeHtml(s.notes || '')}</td>
       <td class="px-4 py-3 text-center space-x-2">
@@ -1544,7 +1989,7 @@ async function saveSupplier(event) {
     const url = id ? `/api/suppliers/${id}` : '/api/suppliers';
     const method = id ? 'PUT' : 'POST';
 
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1567,8 +2012,9 @@ async function deleteSupplier(id, name) {
   if (!confirm(`Bạn có chắc chắn muốn xóa nhà cung cấp "${name}"?`)) return;
 
   try {
-    const res = await fetch(`/api/suppliers/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Không thể xóa nhà cung cấp');
+    const res = await apiFetch(`/api/suppliers/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Không thể xóa nhà cung cấp');
 
     showToast(`Đã xóa nhà cung cấp ${name}`, 'success');
     await loadSuppliers();
@@ -1579,7 +2025,7 @@ async function deleteSupplier(id, name) {
 }
 
 // ============================================================================
-// 12. TIỆN ÍCH HỖ TRỢ (TOAST & HELPERS)
+// 16. TIỆN ÍCH HỖ TRỢ (TOAST & FORMATTERS)
 // ============================================================================
 function showToast(message, type = 'info') {
   const container = document.getElementById('toastContainer');
@@ -1619,4 +2065,10 @@ function escapeHtml(str) {
 function getLocalDateTime(d = new Date()) {
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatShortTime(dateTimeStr) {
+  if (!dateTimeStr) return '-';
+  const parts = dateTimeStr.split(' ');
+  return parts.length > 1 ? parts[1].slice(0, 5) : dateTimeStr;
 }
