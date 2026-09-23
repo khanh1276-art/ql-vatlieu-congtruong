@@ -112,10 +112,15 @@ async function checkAuth() {
     return;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
   try {
     const res = await fetch('/api/auth/me', {
-      headers: { 'Authorization': `Bearer ${AppState.token}` }
+      headers: { 'Authorization': `Bearer ${AppState.token}` },
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       handleUnauthorized();
@@ -125,6 +130,7 @@ async function checkAuth() {
     const user = await res.json();
     onLoginSuccess(user, AppState.token, false);
   } catch (err) {
+    clearTimeout(timeoutId);
     console.error('Lỗi kiểm tra phiên:', err);
     handleUnauthorized();
   }
@@ -146,12 +152,17 @@ async function handleLogin(e) {
     btn.innerHTML = '<span>⏳ Đang xác thực...</span>';
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
   try {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
     const data = await res.json();
     if (!res.ok) {
@@ -160,8 +171,13 @@ async function handleLogin(e) {
 
     onLoginSuccess(data.user, data.token, true);
   } catch (err) {
+    clearTimeout(timeoutId);
     if (errorDiv) {
-      errorDiv.textContent = err.message;
+      if (err.name === 'AbortError') {
+        errorDiv.textContent = 'Máy chủ Render đang thức dậy hoặc đang triển khai phiên bản mới. Vui lòng bấm Đăng nhập lại sau 15-30 giây!';
+      } else {
+        errorDiv.textContent = err.message || 'Lỗi kết nối máy chủ';
+      }
       errorDiv.classList.remove('hidden');
     }
   } finally {
