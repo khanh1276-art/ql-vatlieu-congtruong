@@ -261,6 +261,7 @@ function handleUnauthorized() {
 
 function applyUserRolePermissions(user) {
   const isAdmin = user && user.role === 'ADMIN';
+  const isMod = user && user.role === 'MODERATOR';
 
   // 1. Tên hiển thị & Vai trò
   const uName = document.getElementById('userDisplayName');
@@ -271,6 +272,9 @@ function applyUserRolePermissions(user) {
     if (isAdmin) {
       uBadge.textContent = '👑 Admin Văn Phòng';
       uBadge.className = 'text-[10px] text-amber-400 font-semibold leading-tight';
+    } else if (isMod) {
+      uBadge.textContent = '🛡️ Quản Lý / Điều Hành';
+      uBadge.className = 'text-[10px] text-indigo-300 font-semibold leading-tight';
     } else {
       uBadge.textContent = `🚚 ${user.project_name || 'Cán Bộ Công Trường'}`;
       uBadge.className = 'text-[10px] text-blue-300 font-semibold leading-tight';
@@ -280,7 +284,8 @@ function applyUserRolePermissions(user) {
   // 2. Khung dự án trên Header
   const scopeBox = document.getElementById('projectHeaderScopeBox');
   if (scopeBox) {
-    if (isAdmin) {
+    if (isAdmin || isMod) {
+      // Admin và Điều hành có thể xem và lọc qua lại giữa mọi dự án
       scopeBox.innerHTML = `
         <span class="text-slate-400 text-xs font-medium">Dự án:</span>
         <select id="headerProjectSelect" onchange="handleHeaderProjectChange()"
@@ -309,7 +314,7 @@ function applyUserRolePermissions(user) {
     }
   }
 
-  // 4. Tab Quản lý Tài khoản (Chỉ Admin)
+  // 4. Tab Quản lý Tài khoản (Chỉ Admin mới có)
   const navUsers = document.getElementById('navUsersTab');
   if (navUsers) {
     if (isAdmin) {
@@ -322,10 +327,10 @@ function applyUserRolePermissions(user) {
     }
   }
 
-  // 5. Tab Cấu hình & Danh mục (Chỉ Admin mới có)
+  // 5. Tab Cấu hình & Danh mục (Admin và Điều Hành đều thấy; Công trường bị ẩn)
   const navSettings = document.getElementById('navSettingsTab');
   if (navSettings) {
-    if (isAdmin) {
+    if (isAdmin || isMod) {
       navSettings.classList.remove('hidden');
     } else {
       navSettings.classList.add('hidden');
@@ -1384,19 +1389,33 @@ async function loadDailyReport() {
             ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700">Đã xong</span>`
             : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Hủy</span>`);
 
-        const ticketDate = (t.time_in || '').split(' ')[0];
-        const isTicketToday = ticketDate === getTodayDateStr();
-        const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
-        const canEdit = isAdmin || (isSiteUser && isTicketToday);
+        const currentUser = AppState.currentUser;
+        const isAdmin = currentUser && currentUser.role === 'ADMIN';
+        const isMod = currentUser && currentUser.role === 'MODERATOR';
+        const isSiteUser = currentUser && currentUser.role === 'SITE_USER';
+
+        // Tính thời gian trôi qua từ lúc tạo phiếu
+        let hoursElapsed = 0;
+        try {
+          const tTime = new Date((t.time_in || '').replace(' ', 'T')).getTime();
+          hoursElapsed = (Date.now() - tTime) / (1000 * 60 * 60);
+        } catch (e) {
+          hoursElapsed = 999;
+        }
+        const isWithin24h = hoursElapsed <= 24;
+
+        const canEdit = isAdmin || isMod || (isSiteUser && isWithin24h && t.project_id === currentUser.project_id);
 
         let actionHtml = `<button onclick="fetchAndShowTicket(${t.id})" class="text-blue-600 hover:underline font-semibold" title="In phiếu">🖨️ In</button>`;
 
-        if (t.status !== 'CANCELLED') {
-          if (canEdit) {
-            actionHtml += ` <button onclick="openEditTicketModalById(${t.id})" class="text-amber-600 hover:underline font-semibold ml-2" title="Điều chỉnh thông tin phiếu">✏️ Sửa</button>`;
-          } else if (isSiteUser && !isTicketToday) {
-            actionHtml += ` <span class="text-slate-400 ml-2" title="Số liệu đã khóa sổ qua ngày. Chỉ Admin mới có quyền điều chỉnh!">🔒 Khóa</span>`;
-          }
+        if (canEdit) {
+          actionHtml += ` <button onclick="openEditTicketModalById(${t.id})" class="text-amber-600 hover:underline font-semibold ml-2" title="Điều chỉnh thông tin phiếu">✏️ Sửa</button>`;
+        } else if (isSiteUser && !isWithin24h) {
+          actionHtml += ` <span class="text-slate-400 ml-2" title="Phiếu đã quá 24h và đã bị khóa sổ. Chỉ Admin hoặc Điều Hành mới có quyền sửa!">🔒 Khóa</span>`;
+        }
+
+        if (isAdmin) {
+          actionHtml += ` <button onclick="deleteTicket(${t.id}, '${escapeHtml(t.ticket_code)}')" class="text-red-600 hover:underline font-semibold ml-2" title="Xóa vĩnh viễn phiếu xe">🗑️ Xóa</button>`;
         }
 
         return `
@@ -1704,8 +1723,15 @@ function showTicketModal(ticket) {
   const outEl = document.getElementById('prtTimeOut');
   if (outEl) outEl.textContent = ticket.time_out || '(Đang dỡ hàng tại bãi)';
 
-  const notesEl = document.getElementById('prtNotes');
-  if (notesEl) notesEl.textContent = ticket.notes || 'Không';
+  AppState.currentPrintTicket = ticket;
+  const btnDel = document.getElementById('btnModalDeleteTicket');
+  if (btnDel) {
+    if (AppState.currentUser && AppState.currentUser.role === 'ADMIN') {
+      btnDel.classList.remove('hidden');
+    } else {
+      btnDel.classList.add('hidden');
+    }
+  }
 
   const modal = document.getElementById('ticketModal');
   if (modal) modal.classList.remove('hidden');
@@ -1714,6 +1740,40 @@ function showTicketModal(ticket) {
 function closeTicketModal() {
   const modal = document.getElementById('ticketModal');
   if (modal) modal.classList.add('hidden');
+  AppState.currentPrintTicket = null;
+}
+
+async function handleDeleteCurrentModalTicket() {
+  if (!AppState.currentPrintTicket) return;
+  const ticket = AppState.currentPrintTicket;
+  closeTicketModal();
+  await deleteTicket(ticket.id, ticket.ticket_code);
+}
+
+async function deleteTicket(id, ticketCode) {
+  if (!AppState.currentUser || AppState.currentUser.role !== 'ADMIN') {
+    showToast('Chỉ có Admin văn phòng mới có quyền xóa phiếu xe!', 'error');
+    return;
+  }
+
+  if (!confirm(`Bạn có chắc chắn muốn XÓA VĨNH VIỄN phiếu xe "${ticketCode}"?\n\nDữ liệu sẽ bị xóa hoàn toàn khỏi cơ sở dữ liệu và không thể khôi phục!`)) {
+    return;
+  }
+
+  try {
+    const res = await apiFetch(`/api/tickets/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi khi xóa phiếu xe');
+
+    showToast(`✓ Đã xóa vĩnh viễn phiếu xe ${ticketCode}`, 'success');
+    await Promise.all([
+      loadDailyReport(),
+      loadInYardTickets(),
+      loadDashboardStats()
+    ]);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 // ============================================================================
@@ -1786,10 +1846,12 @@ function renderSettingsUsers() {
     const isSelf = AppState.currentUser && AppState.currentUser.id === u.id;
     const roleLabel = u.role === 'ADMIN'
       ? `<span class="px-2.5 py-1 text-[11px] font-bold rounded-full bg-purple-100 text-purple-800 border border-purple-200">👑 Admin Văn Phòng</span>`
-      : `<span class="px-2.5 py-1 text-[11px] font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-200">🚚 Công Trường</span>`;
+      : (u.role === 'MODERATOR'
+        ? `<span class="px-2.5 py-1 text-[11px] font-bold rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">🛡️ Quản Lý / Điều Hành</span>`
+        : `<span class="px-2.5 py-1 text-[11px] font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-200">🚚 Công Trường</span>`);
 
     let projectDisplay = '';
-    if (u.role === 'ADMIN') {
+    if (u.role === 'ADMIN' || u.role === 'MODERATOR') {
       projectDisplay = `<span class="text-slate-500 font-medium">🌐 Toàn quyền (Tất cả dự án)</span>`;
     } else if (u.project_name) {
       projectDisplay = `
@@ -1898,7 +1960,7 @@ function handleUserRoleChange() {
   const role = document.getElementById('usr_role')?.value || 'SITE_USER';
   const wrapper = document.getElementById('usrProjectWrapper');
   const projSelect = document.getElementById('usr_project');
-  if (role === 'ADMIN') {
+  if (role === 'ADMIN' || role === 'MODERATOR') {
     if (wrapper) wrapper.classList.add('hidden');
     if (projSelect) projSelect.removeAttribute('required');
   } else {
@@ -2174,6 +2236,8 @@ function renderSettingsProjects() {
     return;
   }
 
+  const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
+
   tbody.innerHTML = projs.map(p => `
     <tr class="hover:bg-slate-50 transition">
       <td class="px-4 py-3 font-mono font-semibold text-slate-700">${p.code}</td>
@@ -2188,7 +2252,7 @@ function renderSettingsProjects() {
       <td class="px-4 py-3 text-slate-400 text-xs">${escapeHtml(p.notes || '')}</td>
       <td class="px-4 py-3 text-center space-x-2">
         <button onclick="editProject(${p.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
-        <button onclick="deleteProject(${p.id}, '${escapeHtml(p.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
+        ${isAdmin ? `<button onclick="deleteProject(${p.id}, '${escapeHtml(p.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>` : ''}
       </td>
     </tr>
   `).join('');
@@ -2268,16 +2332,38 @@ async function saveProject(event) {
 }
 
 async function deleteProject(id, name) {
-  if (!confirm(`Bạn có chắc chắn muốn xóa dự án "${name}"?`)) return;
+  if (!AppState.currentUser || AppState.currentUser.role !== 'ADMIN') {
+    showToast('Chỉ có Admin văn phòng mới có quyền xóa dự án!', 'error');
+    return;
+  }
+
+  const proj = AppState.projects.find(p => p.id === id);
+  const tripCount = proj ? (proj.total_trips || 0) : 0;
+
+  let cascade = false;
+  if (tripCount > 0) {
+    const msg = `⚠️ Dự án "${name}" đang có ${tripCount} lượt xe ghi nhận.\n\n` +
+      `Bạn có muốn XÓA DỰ ÁN CÙNG TOÀN BỘ ${tripCount} LƯỢT XE ĐI KÈM để làm sạch dữ liệu mẫu không?\n\n` +
+      `• Bấm OK: Xóa sạch dự án và tất cả các phiếu xe liên quan.\n` +
+      `• Bấm Hủy: Giữ lại dữ liệu.`;
+    if (!confirm(msg)) return;
+    cascade = true;
+  } else {
+    if (!confirm(`Bạn có chắc chắn muốn xóa dự án "${name}"?`)) return;
+  }
 
   try {
-    const res = await apiFetch(`/api/projects/${id}`, { method: 'DELETE' });
+    const url = `/api/projects/${id}${cascade ? '?cascade=true' : ''}`;
+    const res = await apiFetch(url, { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Không thể xóa dự án');
 
-    showToast(`Đã xóa dự án ${name}`, 'success');
+    const extraMsg = data.deletedTickets > 0 ? ` (kèm ${data.deletedTickets} phiếu xe)` : '';
+    showToast(`✓ Đã xóa thành công dự án "${name}"${extraMsg}`, 'success');
     await loadProjects();
     renderSettingsProjects();
+    loadDashboardStats();
+    loadDailyReport();
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -2293,6 +2379,8 @@ function renderSettingsVehicles() {
     tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-slate-400">Chưa có xe nào trong danh mục</td></tr>`;
     return;
   }
+
+  const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
 
   tbody.innerHTML = vehs.map(v => {
     const dim = (v.length > 0 && v.width > 0 && v.height > 0)
@@ -2310,7 +2398,7 @@ function renderSettingsVehicles() {
         <td class="px-4 py-3 text-slate-600">${escapeHtml(v.default_material_name || '-')}</td>
         <td class="px-4 py-3 text-center space-x-2">
           <button onclick="editVehicle(${v.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
-          <button onclick="deleteVehicle(${v.id}, '${v.plate_number}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
+          ${isAdmin ? `<button onclick="deleteVehicle(${v.id}, '${v.plate_number}')" class="text-red-600 hover:underline font-semibold">Xóa</button>` : ''}
         </td>
       </tr>
     `;
@@ -2446,6 +2534,11 @@ async function saveVehicle(event) {
 }
 
 async function deleteVehicle(id, plate) {
+  if (!AppState.currentUser || AppState.currentUser.role !== 'ADMIN') {
+    showToast('Chỉ có Admin văn phòng mới có quyền xóa xe trong danh mục!', 'error');
+    return;
+  }
+
   if (!confirm(`Bạn có chắc chắn muốn xóa xe "${plate}"?`)) return;
 
   try {
@@ -2472,6 +2565,8 @@ function renderSettingsMaterials() {
     return;
   }
 
+  const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
+
   tbody.innerHTML = mats.map(m => `
     <tr class="hover:bg-slate-50 transition">
       <td class="px-4 py-3 font-mono font-semibold text-slate-700">${m.code}</td>
@@ -2485,7 +2580,7 @@ function renderSettingsMaterials() {
       <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${Number(m.cumulative_volume || 0).toFixed(2)}</td>
       <td class="px-4 py-3 text-center space-x-2">
         <button onclick="editMaterial(${m.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
-        <button onclick="deleteMaterial(${m.id}, '${escapeHtml(m.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
+        ${isAdmin ? `<button onclick="deleteMaterial(${m.id}, '${escapeHtml(m.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>` : ''}
       </td>
     </tr>
   `).join('');
@@ -2562,6 +2657,11 @@ async function saveMaterial(event) {
 }
 
 async function deleteMaterial(id, name) {
+  if (!AppState.currentUser || AppState.currentUser.role !== 'ADMIN') {
+    showToast('Chỉ có Admin văn phòng mới có quyền xóa loại vật liệu!', 'error');
+    return;
+  }
+
   if (!confirm(`Bạn có chắc chắn muốn xóa loại vật liệu "${name}"?`)) return;
 
   try {
@@ -2588,6 +2688,8 @@ function renderSettingsSuppliers() {
     return;
   }
 
+  const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
+
   tbody.innerHTML = supps.map(s => `
     <tr class="hover:bg-slate-50 transition">
       <td class="px-4 py-3 font-mono font-semibold text-slate-700">${s.code}</td>
@@ -2598,7 +2700,7 @@ function renderSettingsSuppliers() {
       <td class="px-4 py-3 text-slate-400 text-xs">${escapeHtml(s.notes || '')}</td>
       <td class="px-4 py-3 text-center space-x-2">
         <button onclick="editSupplier(${s.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
-        <button onclick="deleteSupplier(${s.id}, '${escapeHtml(s.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
+        ${isAdmin ? `<button onclick="deleteSupplier(${s.id}, '${escapeHtml(s.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>` : ''}
       </td>
     </tr>
   `).join('');
@@ -2678,6 +2780,11 @@ async function saveSupplier(event) {
 }
 
 async function deleteSupplier(id, name) {
+  if (!AppState.currentUser || AppState.currentUser.role !== 'ADMIN') {
+    showToast('Chỉ có Admin văn phòng mới có quyền xóa nhà cung cấp!', 'error');
+    return;
+  }
+
   if (!confirm(`Bạn có chắc chắn muốn xóa nhà cung cấp "${name}"?`)) return;
 
   try {
@@ -2928,6 +3035,8 @@ window.handleCumulativeFilterChange = handleCumulativeFilterChange;
 window.exportCumulativeExcel = exportCumulativeExcel;
 window.fetchAndShowTicket = fetchAndShowTicket;
 window.closeTicketModal = closeTicketModal;
+window.deleteTicket = deleteTicket;
+window.handleDeleteCurrentModalTicket = handleDeleteCurrentModalTicket;
 window.switchSettingsSubTab = switchSettingsSubTab;
 window.openUserModal = openUserModal;
 window.closeUserModal = closeUserModal;
