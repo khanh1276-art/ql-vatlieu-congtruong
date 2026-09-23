@@ -1836,27 +1836,30 @@ function escapeXml(unsafe) {
 
 const { initCloudDatabase, isCloudConfigured } = require('./cloud_sync.js');
 
-async function bootstrap() {
+// Khởi động lắng nghe cổng NGAY LẬP TỨC để Render xác nhận "Live" và mở kết nối cho người dùng
+server.listen(PORT, () => {
+  console.log(`=====================================================`);
+  console.log(` PHẦN MỀM QUẢN LÝ KHO VẬT LIỆU CÔNG TRƯỜNG`);
+  console.log(` Máy chủ đang chạy tại: http://localhost:${PORT}`);
+  console.log(` Mạng nội bộ: http://0.0.0.0:${PORT}`);
   if (isCloudConfigured()) {
-    console.log('☁️ Phát hiện cấu hình Cloud Database (Turso). Đang đồng bộ dữ liệu...');
-    await initCloudDatabase(db);
+    console.log(` ☁️ Trạng thái: Đang kết nối Cloud Database (Turso)...`);
+  } else {
+    console.log(` 💾 Trạng thái: SQLite Cục bộ (data/inventory.db)`);
   }
+  console.log(`=====================================================`);
 
-  server.listen(PORT, () => {
-    console.log(`=====================================================`);
-    console.log(` PHẦN MỀM QUẢN LÝ KHO VẬT LIỆU CÔNG TRƯỜNG`);
-    console.log(` Máy chủ đang chạy tại: http://localhost:${PORT}`);
-    console.log(` Mạng nội bộ: http://0.0.0.0:${PORT}`);
-    if (isCloudConfigured()) {
-      console.log(` ☁️ Trạng thái: ĐÃ KẾT NỐI CLOUD DATABASE (TURSO)`);
-      console.log(` Dữ liệu được bảo toàn vĩnh viễn trên đám mây!`);
-    } else {
-      console.log(` 💾 Trạng thái: SQLite Cục bộ (data/inventory.db)`);
-    }
-    console.log(`=====================================================`);
-  });
-}
-
-bootstrap().catch(err => {
-  console.error('Lỗi nghiêm trọng khi khởi động máy chủ:', err);
+  // Đồng bộ Cloud Database ở chế độ nền (Background) an toàn, KHÔNG LÀM TREO SERVER
+  if (isCloudConfigured()) {
+    console.log('🔄 Đang tiến hành kết nối và đồng bộ dữ liệu với Turso...');
+    initCloudDatabase(db).then((result) => {
+      if (result && result.cloud) {
+        console.log('☁️ ĐÃ KẾT NỐI VÀ ĐỒNG BỘ THÀNH CÔNG VỚI CLOUD TURSO!');
+      } else {
+        console.log('⚠️ Kết nối Cloud không thành công hoặc dùng SQLite cục bộ:', result?.error || '');
+      }
+    }).catch(err => {
+      console.error('⚠️ Lỗi khi đồng bộ Cloud ở nền:', err.message);
+    });
+  }
 });
