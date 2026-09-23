@@ -2593,13 +2593,8 @@ async function loadBackupInfo() {
     if (userEl) userEl.textContent = `${data.counts.users} tài khoản`;
 
     if (cloudBadge) {
-      if (data.cloud_connected) {
-        cloudBadge.className = 'px-3.5 py-1.5 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1.5';
-        cloudBadge.innerHTML = '<span>☁️</span><span>ĐÃ KẾT NỐI CLOUD DATABASE (TURSO) - DỮ LIỆU ĐƯỢC BẢO TOÀN VĨNH VIỄN</span>';
-      } else {
-        cloudBadge.className = 'px-3.5 py-1.5 text-xs font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center space-x-1.5';
-        cloudBadge.innerHTML = '<span>💾</span><span>CHƯA KẾT NỐI CLOUD DATABASE (Đang lưu tạm trên máy chủ Render)</span>';
-      }
+      cloudBadge.className = 'px-3.5 py-1.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 inline-flex items-center space-x-1.5';
+      cloudBadge.innerHTML = '<span>💾</span><span>CƠ SỞ DỮ LIỆU SQLITE (Lưu trữ trực tiếp trên máy chủ)</span>';
     }
   } catch (err) {
     if (sizeEl) sizeEl.textContent = 'Lỗi kết nối';
