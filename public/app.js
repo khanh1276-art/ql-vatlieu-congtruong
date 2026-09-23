@@ -1610,6 +1610,7 @@ function switchSettingsSubTab(sub) {
   if (sub === 'vehicles') renderSettingsVehicles();
   if (sub === 'materials') renderSettingsMaterials();
   if (sub === 'suppliers') renderSettingsSuppliers();
+  if (sub === 'backup') loadBackupInfo();
 }
 
 // --- 15.1 Quản Lý Tài Khoản (Users & RBAC) ---
@@ -2555,6 +2556,165 @@ async function deleteSupplier(id, name) {
   } catch (err) {
     showToast(err.message, 'error');
   }
+// --- 15.6 Sao Lưu & Khôi Phục Dữ Liệu (Backup & Restore) ---
+async function loadBackupInfo() {
+  const sizeEl = document.getElementById('backupDbSize');
+  const ticketEl = document.getElementById('backupTicketCount');
+  const projEl = document.getElementById('backupProjectCount');
+  const userEl = document.getElementById('backupUserCount');
+  const cloudBadge = document.getElementById('backupCloudStatusBadge');
+
+  if (sizeEl) sizeEl.textContent = 'Đang tải...';
+
+  try {
+    const res = await apiFetch('/api/backup/info');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi tải thông tin');
+
+    if (sizeEl) sizeEl.textContent = `${data.db_size_kb} KB (${data.last_modified || '-'})`;
+    if (ticketEl) ticketEl.textContent = `${data.counts.tickets} chuyến`;
+    if (projEl) projEl.textContent = `${data.counts.projects} dự án`;
+    if (userEl) userEl.textContent = `${data.counts.users} tài khoản`;
+
+    if (cloudBadge) {
+      if (data.cloud_connected) {
+        cloudBadge.className = 'px-3.5 py-1.5 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1.5';
+        cloudBadge.innerHTML = '<span>☁️</span><span>ĐÃ KẾT NỐI CLOUD DATABASE (TURSO) - DỮ LIỆU ĐƯỢC BẢO TOÀN VĨNH VIỄN</span>';
+      } else {
+        cloudBadge.className = 'px-3.5 py-1.5 text-xs font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center space-x-1.5';
+        cloudBadge.innerHTML = '<span>💾</span><span>CHƯA KẾT NỐI CLOUD DATABASE (Đang lưu tạm trên máy chủ Render)</span>';
+      }
+    }
+  } catch (err) {
+    if (sizeEl) sizeEl.textContent = 'Lỗi kết nối';
+    console.error('Lỗi load backup info:', err);
+  }
+}
+
+async function downloadJsonBackup() {
+  try {
+    showToast('Đang chuẩn bị bản sao lưu JSON...', 'info');
+    const token = AppState.token || localStorage.getItem('auth_token');
+    const res = await fetch('/api/backup/export', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Lỗi xuất dữ liệu');
+    }
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const dateStr = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+    a.download = `Backup_VLXD_${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    showToast('✓ Đã tải về bản sao lưu JSON thành công!', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function downloadDbFile() {
+  try {
+    showToast('Đang chuẩn bị file database SQLite...', 'info');
+    const token = AppState.token || localStorage.getItem('auth_token');
+    const res = await fetch('/api/backup/download-db', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Lỗi tải database');
+    }
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `inventory_${new Date().toISOString().slice(0,10)}.db`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    showToast('✓ Đã tải file SQLite (.db) thành công!', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function restoreBackupFromFile() {
+  const fileInput = document.getElementById('backupFileInput');
+  const btn = document.getElementById('btnRestoreBackup');
+  const msgEl = document.getElementById('restoreStatusMsg');
+
+  if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+    showToast('Vui lòng chọn 1 tệp sao lưu .json từ máy tính của bạn', 'error');
+    return;
+  }
+
+  const file = fileInput.files[0];
+  if (!confirm(`Bạn có chắc chắn muốn nạp dữ liệu từ tệp "${file.name}"? Dữ liệu hiện tại sẽ được cập nhật/đồng bộ.`)) {
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (msgEl) {
+    msgEl.classList.remove('hidden');
+    msgEl.textContent = '⏳ Đang đọc và nạp dữ liệu vào cơ sở dữ liệu...';
+    msgEl.className = 'text-xs font-semibold text-blue-600';
+  }
+
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+
+    if (!parsed || !parsed.data) {
+      throw new Error('Tệp không đúng cấu trúc sao lưu chuẩn (thiếu trường data)');
+    }
+
+    const res = await apiFetch('/api/backup/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parsed)
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi khi khôi phục dữ liệu');
+
+    if (msgEl) {
+      msgEl.textContent = `✓ Khôi phục thành công: ${data.stats.projects} dự án, ${data.stats.vehicles} xe, ${data.stats.tickets} chuyến xe, ${data.stats.users} tài khoản.`;
+      msgEl.className = 'text-xs font-semibold text-emerald-600';
+    }
+
+    showToast('✓ Đã khôi phục toàn bộ dữ liệu thành công!', 'success');
+    fileInput.value = '';
+
+    // Tải lại toàn bộ dữ liệu giao diện
+    await Promise.all([
+      loadProjects(),
+      loadSuppliers(),
+      loadMaterials(),
+      loadVehicles(),
+      loadUsers(),
+      loadBackupInfo(),
+      loadDashboardStats()
+    ]);
+
+  } catch (err) {
+    if (msgEl) {
+      msgEl.textContent = `❌ Lỗi: ${err.message}`;
+      msgEl.className = 'text-xs font-semibold text-red-600';
+    }
+    showToast(err.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ============================================================================
@@ -2674,3 +2834,7 @@ window.closeSupplierModal = closeSupplierModal;
 window.editSupplier = editSupplier;
 window.saveSupplier = saveSupplier;
 window.deleteSupplier = deleteSupplier;
+window.loadBackupInfo = loadBackupInfo;
+window.downloadJsonBackup = downloadJsonBackup;
+window.downloadDbFile = downloadDbFile;
+window.restoreBackupFromFile = restoreBackupFromFile;

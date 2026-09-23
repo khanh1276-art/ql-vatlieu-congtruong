@@ -849,6 +849,9 @@
         <button onclick="switchSettingsSubTab('suppliers')" class="settings-subtab px-4 py-2 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-200" data-subtab="suppliers">
           🏢 Nhà Cung Cấp
         </button>
+        <button onclick="switchSettingsSubTab('backup')" class="settings-subtab px-4 py-2 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-200" data-subtab="backup">
+          💾 Sao Lưu & Khôi Phục
+        </button>
       </div>
 
       <!-- 2. Cấu hình Dự Án -->
@@ -971,6 +974,141 @@
             </thead>
             <tbody id="settingsSuppliersTable" class="divide-y divide-slate-100"></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- 6. Sao Lưu & Khôi Phục Dữ Liệu -->
+      <div id="settings-backup" class="settings-pane hidden space-y-6">
+        <!-- Banner cảnh báo về Render Free Storage -->
+        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-5 text-amber-900 space-y-2">
+          <div class="flex items-center space-x-2 font-bold text-sm text-amber-800">
+            <span>⚠️</span>
+            <span>LƯU Ý QUAN TRỌNG VỀ LƯU TRỮ DỮ LIỆU TRÊN CLOUD RENDER (GÓI MIỄN PHÍ)</span>
+          </div>
+          <p class="text-xs leading-relaxed text-amber-800">
+            Máy chủ Render gói Free (miễn phí) hoạt động với cơ chế <strong>ổ cứng tạm (Ephemeral Disk)</strong> và sẽ <strong>tự động ngủ đông (Spin down)</strong> sau mỗi 15 phút không có người truy cập. Khi có người vào lại, Render bật một máy chủ mới toanh, dẫn đến các dữ liệu mới nhập trên ổ cứng tạm sẽ bị đặt lại về ban đầu.
+          </p>
+          <div class="text-xs font-semibold text-amber-900 pt-1 flex flex-wrap gap-2 items-center">
+            <span>💡 Giải pháp chống mất dữ liệu vĩnh viễn:</span>
+            <span class="bg-amber-100 text-amber-900 px-2 py-0.5 rounded border border-amber-300">1. Tải bản sao lưu định kỳ bên dưới</span>
+            <span class="bg-amber-100 text-amber-900 px-2 py-0.5 rounded border border-amber-300">2. Kết nối Database Cloud miễn phí (Supabase/Turso)</span>
+            <span class="bg-amber-100 text-amber-900 px-2 py-0.5 rounded border border-amber-300">3. Chạy tại máy tính văn phòng + Cloudflare Tunnel</span>
+          </div>
+        </div>
+
+        <!-- Khung 1: Trạng thái cơ sở dữ liệu -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                <span>📊</span> Trạng Thái Cơ Sở Dữ Liệu Hiện Tại
+              </h3>
+              <p class="text-xs text-slate-500">Tệp dữ liệu lưu trữ SQLite cục bộ trên máy chủ</p>
+            </div>
+            <button onclick="loadBackupInfo()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition flex items-center space-x-1">
+              <span>🔄</span>
+              <span>Làm mới</span>
+            </button>
+          </div>
+
+          <div class="flex items-center">
+            <div id="backupCloudStatusBadge" class="px-3 py-1.5 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-200 inline-flex items-center space-x-1.5">
+              <span>Đang kiểm tra kết nối Cloud Database...</span>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200">
+              <div class="text-xs text-slate-500 font-medium">Dung Lượng File DB</div>
+              <div id="backupDbSize" class="text-base font-bold text-slate-900 mt-1">Đang tải...</div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200">
+              <div class="text-xs text-slate-500 font-medium">Tổng Chuyến Xe</div>
+              <div id="backupTicketCount" class="text-base font-bold text-blue-600 mt-1">0</div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200">
+              <div class="text-xs text-slate-500 font-medium">Số Lượng Dự Án</div>
+              <div id="backupProjectCount" class="text-base font-bold text-emerald-600 mt-1">0</div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200">
+              <div class="text-xs text-slate-500 font-medium">Tổng Tài Khoản</div>
+              <div id="backupUserCount" class="text-base font-bold text-purple-600 mt-1">0</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Khung 2: Tải bản sao lưu (Backup) -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div class="border-b border-slate-100 pb-3">
+            <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+              <span>📥</span> Xuất & Tải Về Bản Sao Lưu (Backup)
+            </h3>
+            <p class="text-xs text-slate-500">Tải dữ liệu về máy tính của bạn để cất giữ an toàn hoặc chuyển sang máy chủ khác</p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <!-- Tải file JSON toàn diện -->
+            <div class="p-5 rounded-xl border border-blue-200 bg-blue-50/50 flex flex-col justify-between space-y-3">
+              <div>
+                <div class="flex items-center space-x-2 font-bold text-slate-800 text-sm">
+                  <span>📄</span>
+                  <span>Bản Sao Lưu Toàn Diện (.JSON)</span>
+                  <span class="text-[10px] bg-blue-600 text-white font-bold px-2 py-0.5 rounded-full">Khuyên dùng</span>
+                </div>
+                <p class="text-xs text-slate-600 mt-1">
+                  Xuất toàn bộ Dự án, Xe, Vật liệu, Nhà cung cấp, Tài khoản và mọi Chuyến xe thành tệp văn bản chuẩn. Dễ dàng khôi phục trên bất kỳ hệ thống nào.
+                </p>
+              </div>
+              <button onclick="downloadJsonBackup()" class="w-full py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs rounded-xl shadow transition flex items-center justify-center space-x-2">
+                <span>📥</span>
+                <span>TẢI BẢN SAO LƯU (.JSON)</span>
+              </button>
+            </div>
+
+            <!-- Tải file SQLite trực tiếp -->
+            <div class="p-5 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between space-y-3">
+              <div>
+                <div class="flex items-center space-x-2 font-bold text-slate-800 text-sm">
+                  <span>💾</span>
+                  <span>File Cơ Sở Dữ Liệu Gốc (.DB)</span>
+                </div>
+                <p class="text-xs text-slate-600 mt-1">
+                  Tải trực tiếp tệp nhị phân SQLite (`inventory.db`). Dùng để mở bằng phần mềm SQLite Viewer hoặc lưu trữ dự phòng nguyên bản.
+                </p>
+              </div>
+              <button onclick="downloadDbFile()" class="w-full py-2.5 bg-slate-800 hover:bg-slate-900 active:bg-black text-white font-bold text-xs rounded-xl shadow transition flex items-center justify-center space-x-2">
+                <span>💾</span>
+                <span>TẢI TỆP CƠ SỞ DỮ LIỆU (.DB)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Khung 3: Khôi phục dữ liệu (Restore) -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div class="border-b border-slate-100 pb-3">
+            <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+              <span>📤</span> Khôi Phục Dữ Liệu Từ Bản Sao Lưu (Restore)
+            </h3>
+            <p class="text-xs text-slate-500">Nạp lại toàn bộ số liệu công trường từ tệp `.json` đã tải về trước đó</p>
+          </div>
+
+          <div class="p-5 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 space-y-4 text-center">
+            <div class="space-y-1">
+              <div class="text-3xl">📁</div>
+              <div class="text-xs font-bold text-slate-700">Chọn tệp sao lưu `.json` từ máy tính</div>
+              <div class="text-[11px] text-slate-500">Hệ thống sẽ đồng bộ hóa lại toàn bộ dự án, xe, vật liệu và phiếu cân</div>
+            </div>
+
+            <div class="flex items-center justify-center space-x-3 max-w-md mx-auto">
+              <input type="file" id="backupFileInput" accept=".json" class="block w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
+              <button onclick="restoreBackupFromFile()" id="btnRestoreBackup" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold text-xs rounded-lg shadow transition whitespace-nowrap">
+                Khôi Phục Ngay
+              </button>
+            </div>
+
+            <div id="restoreStatusMsg" class="text-xs font-semibold text-slate-600 hidden"></div>
+          </div>
         </div>
       </div>
     </section>
