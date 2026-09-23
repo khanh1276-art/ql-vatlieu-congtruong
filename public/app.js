@@ -234,13 +234,15 @@ function handleUnauthorized() {
 }
 
 function applyUserRolePermissions(user) {
+  const isAdmin = user && user.role === 'ADMIN';
+
   // 1. Tên hiển thị & Vai trò
   const uName = document.getElementById('userDisplayName');
   if (uName) uName.textContent = user.full_name || user.username;
 
   const uBadge = document.getElementById('userRoleBadge');
   if (uBadge) {
-    if (user.role === 'ADMIN') {
+    if (isAdmin) {
       uBadge.textContent = '👑 Admin Văn Phòng';
       uBadge.className = 'text-[10px] text-amber-400 font-semibold leading-tight';
     } else {
@@ -252,7 +254,7 @@ function applyUserRolePermissions(user) {
   // 2. Khung dự án trên Header
   const scopeBox = document.getElementById('projectHeaderScopeBox');
   if (scopeBox) {
-    if (user.role === 'ADMIN') {
+    if (isAdmin) {
       scopeBox.innerHTML = `
         <span class="text-slate-400 text-xs font-medium">Dự án:</span>
         <select id="headerProjectSelect" onchange="handleHeaderProjectChange()"
@@ -271,10 +273,33 @@ function applyUserRolePermissions(user) {
     }
   }
 
-  // 3. Tab Cấu hình & Tài khoản (Chỉ Admin mới có)
+  // 3. Nút cấp tài khoản nhanh trên Header (Chỉ Admin)
+  const headerAdminActionBox = document.getElementById('headerAdminActionBox');
+  if (headerAdminActionBox) {
+    if (isAdmin) {
+      headerAdminActionBox.classList.remove('hidden');
+    } else {
+      headerAdminActionBox.classList.add('hidden');
+    }
+  }
+
+  // 4. Tab Quản lý Tài khoản (Chỉ Admin)
+  const navUsers = document.getElementById('navUsersTab');
+  if (navUsers) {
+    if (isAdmin) {
+      navUsers.classList.remove('hidden');
+    } else {
+      navUsers.classList.add('hidden');
+      if (AppState.currentTab === 'users') {
+        switchTab('checkin');
+      }
+    }
+  }
+
+  // 5. Tab Cấu hình & Danh mục (Chỉ Admin mới có)
   const navSettings = document.getElementById('navSettingsTab');
   if (navSettings) {
-    if (user.role === 'ADMIN') {
+    if (isAdmin) {
       navSettings.classList.remove('hidden');
     } else {
       navSettings.classList.add('hidden');
@@ -351,6 +376,14 @@ function populateProjectDropdowns() {
   if (vehSel) vehSel.innerHTML = '<option value="">-- Chọn dự án thường trực --</option>' + AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
   if (usrProjSel) usrProjSel.innerHTML = '<option value="">-- Chọn dự án phân công --</option>' + AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
+  const userFilterSel = document.getElementById('userFilterProject');
+  if (userFilterSel) {
+    const curVal = userFilterSel.value;
+    userFilterSel.innerHTML = '<option value="">-- Tất cả dự án --</option>' +
+      AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    if (curVal) userFilterSel.value = curVal;
+  }
+
   if (checkinSel) {
     checkinSel.innerHTML = optionsRequired;
     if (!isAdmin && AppState.currentUser?.project_id) {
@@ -395,9 +428,9 @@ function handleHeaderProjectChange() {
 // 6. CHUYỂN TAB VÀ ĐIỀU HƯỚNG
 // ============================================================================
 function switchTab(tabId) {
-  // Chặn Site User vào tab Cấu hình
-  if (tabId === 'settings' && AppState.currentUser?.role !== 'ADMIN') {
-    showToast('Tài khoản công trường không có quyền truy cập Cấu hình & Quản lý', 'error');
+  // Chặn Site User vào tab Cấu hình và Quản lý Tài khoản
+  if ((tabId === 'settings' || tabId === 'users') && AppState.currentUser?.role !== 'ADMIN') {
+    showToast('Tài khoản công trường không có quyền truy cập Quản lý Tài khoản & Cấu hình', 'error');
     return;
   }
 
@@ -427,8 +460,10 @@ function switchTab(tabId) {
     loadDailyReport();
   } else if (tabId === 'cumulative') {
     loadCumulativeReport();
+  } else if (tabId === 'users') {
+    loadUsers();
   } else if (tabId === 'settings') {
-    switchSettingsSubTab('users');
+    switchSettingsSubTab('projects');
   }
 }
 
@@ -1581,14 +1616,14 @@ function switchSettingsSubTab(sub) {
 async function loadUsers() {
   const tbody = document.getElementById('settingsUsersTable');
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Đang tải danh sách tài khoản...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-slate-400 font-medium">Đang tải danh sách tài khoản...</td></tr>`;
 
   try {
     const res = await apiFetch('/api/users');
     AppState.users = await res.json();
     renderSettingsUsers();
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-red-500">${escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-red-500 font-semibold">${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -1596,34 +1631,79 @@ function renderSettingsUsers() {
   const tbody = document.getElementById('settingsUsersTable');
   if (!tbody) return;
 
-  if (AppState.users.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Chưa có tài khoản nào</td></tr>`;
+  const filterProjId = document.getElementById('userFilterProject')?.value || '';
+  let usersToDisplay = AppState.users || [];
+
+  if (filterProjId) {
+    const pId = parseInt(filterProjId, 10);
+    usersToDisplay = usersToDisplay.filter(u => u.project_id === pId);
+  }
+
+  // Cập nhật số lượng tài khoản hiển thị
+  const countEl = document.getElementById('userCountSummary');
+  if (countEl) {
+    countEl.textContent = `Hiển thị ${usersToDisplay.length} / ${AppState.users.length} tài khoản`;
+  }
+
+  if (usersToDisplay.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-8 text-slate-400 font-medium">Không tìm thấy tài khoản nào phù hợp bộ lọc</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = AppState.users.map(u => {
+  tbody.innerHTML = usersToDisplay.map((u, index) => {
     const isSelf = AppState.currentUser && AppState.currentUser.id === u.id;
     const roleLabel = u.role === 'ADMIN'
-      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-purple-100 text-purple-800">👑 Admin</span>`
-      : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-800">🚚 Công Trường</span>`;
+      ? `<span class="px-2.5 py-1 text-[11px] font-bold rounded-full bg-purple-100 text-purple-800 border border-purple-200">👑 Admin Văn Phòng</span>`
+      : `<span class="px-2.5 py-1 text-[11px] font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-200">🚚 Công Trường</span>`;
+
+    let projectDisplay = '';
+    if (u.role === 'ADMIN') {
+      projectDisplay = `<span class="text-slate-500 font-medium">🌐 Toàn quyền (Tất cả dự án)</span>`;
+    } else if (u.project_name) {
+      projectDisplay = `
+        <span class="inline-flex items-center space-x-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 font-semibold rounded-lg border border-emerald-200">
+          <span>🏗️</span>
+          <span>${escapeHtml(u.project_name)}</span>
+        </span>
+      `;
+    } else {
+      projectDisplay = `<span class="text-amber-500 font-medium italic">⚠️ Chưa gán dự án</span>`;
+    }
+
     const statusLabel = u.status === 'ACTIVE'
-      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Hoạt động</span>`
-      : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-800">Bị khóa</span>`;
+      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">✅ Hoạt động</span>`
+      : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-800">🔒 Bị khóa</span>`;
+
+    const toggleStatusBtn = isSelf ? '' : (
+      u.status === 'ACTIVE'
+        ? `<button onclick="toggleUserStatus(${u.id}, 'ACTIVE', '${escapeHtml(u.username)}')" class="text-amber-600 hover:text-amber-800 font-semibold hover:underline" title="Khóa tài khoản này">Khóa</button>`
+        : `<button onclick="toggleUserStatus(${u.id}, 'BLOCKED', '${escapeHtml(u.username)}')" class="text-emerald-600 hover:text-emerald-800 font-semibold hover:underline" title="Mở khóa tài khoản này">Mở</button>`
+    );
 
     return `
-      <tr class="hover:bg-slate-50 transition">
-        <td class="px-4 py-3 font-mono font-bold text-slate-800">${escapeHtml(u.username)}</td>
+      <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+        <td class="px-4 py-3 text-center text-slate-400 font-mono font-semibold">${index + 1}</td>
+        <td class="px-4 py-3">
+          <div class="font-mono font-bold text-slate-900">${escapeHtml(u.username)}</div>
+          ${isSelf ? '<span class="text-[10px] text-blue-600 font-semibold">(Tài khoản của bạn)</span>' : ''}
+        </td>
         <td class="px-4 py-3 font-semibold text-slate-900">${escapeHtml(u.full_name)}</td>
         <td class="px-4 py-3 text-center">${roleLabel}</td>
-        <td class="px-4 py-3 text-slate-700">${escapeHtml(u.project_name || (u.role === 'ADMIN' ? 'Toàn quyền (Tất cả dự án)' : '-'))}</td>
+        <td class="px-4 py-3">${projectDisplay}</td>
         <td class="px-4 py-3 text-center">${statusLabel}</td>
-        <td class="px-4 py-3 text-center space-x-2">
-          <button onclick="editUser(${u.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
-          ${isSelf ? '' : `<button onclick="deleteUser(${u.id}, '${escapeHtml(u.username)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>`}
+        <td class="px-4 py-3 text-center space-x-2.5 whitespace-nowrap">
+          <button onclick="editUser(${u.id})" class="text-blue-600 hover:text-blue-800 font-bold hover:underline">✏️ Sửa</button>
+          <button onclick="openResetPasswordModal(${u.id}, '${escapeHtml(u.username)}', '${escapeHtml(u.full_name)}')" class="text-indigo-600 hover:text-indigo-800 font-bold hover:underline">🔑 Đổi MK</button>
+          ${toggleStatusBtn}
+          ${isSelf ? '' : `<button onclick="deleteUser(${u.id}, '${escapeHtml(u.username)}')" class="text-red-500 hover:text-red-700 font-bold hover:underline">🗑️ Xóa</button>`}
         </td>
       </tr>
     `;
   }).join('');
+}
+
+function filterUserTableByProject() {
+  renderSettingsUsers();
 }
 
 function openUserModal() {
@@ -1634,7 +1714,10 @@ function openUserModal() {
   if (idIn) idIn.value = '';
 
   const uIn = document.getElementById('usr_username');
-  if (uIn) uIn.disabled = false;
+  if (uIn) {
+    uIn.disabled = false;
+    uIn.value = '';
+  }
 
   const titleEl = document.getElementById('userModalTitle') || document.getElementById('usrModalTitle');
   if (titleEl) titleEl.textContent = 'Cấp Tài Khoản Người Dùng Mới';
@@ -1646,7 +1729,27 @@ function openUserModal() {
   if (hintP) hintP.classList.add('hidden');
 
   const pwdIn = document.getElementById('usr_password');
-  if (pwdIn) pwdIn.setAttribute('required', 'required');
+  if (pwdIn) {
+    pwdIn.value = '123456';
+    pwdIn.type = 'password';
+    pwdIn.setAttribute('required', 'required');
+  }
+
+  const icon = document.getElementById('usrPwdToggleIcon');
+  if (icon) icon.textContent = '👁️';
+
+  // Nạp danh sách dự án mới nhất vào dropdown phân công
+  const projSelect = document.getElementById('usr_project');
+  if (projSelect) {
+    projSelect.innerHTML = '<option value="">-- Chọn dự án phân công --</option>' +
+      AppState.projects.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  }
+
+  const roleSelect = document.getElementById('usr_role');
+  if (roleSelect) roleSelect.value = 'SITE_USER';
+
+  const statSelect = document.getElementById('usr_status');
+  if (statSelect) statSelect.value = 'ACTIVE';
 
   handleUserRoleChange();
 
@@ -1688,8 +1791,12 @@ function editUser(id) {
   const pwdIn = document.getElementById('usr_password');
   if (pwdIn) {
     pwdIn.value = '';
+    pwdIn.type = 'password';
     pwdIn.removeAttribute('required');
   }
+
+  const icon = document.getElementById('usrPwdToggleIcon');
+  if (icon) icon.textContent = '👁️';
 
   const reqSpan = document.getElementById('usrPwdRequired');
   if (reqSpan) reqSpan.classList.add('hidden');
@@ -1706,8 +1813,13 @@ function editUser(id) {
   const statIn = document.getElementById('usr_status');
   if (statIn) statIn.value = u.status;
 
+  // Cập nhật danh sách dự án
   const projIn = document.getElementById('usr_project');
-  if (projIn) projIn.value = u.project_id || '';
+  if (projIn) {
+    projIn.innerHTML = '<option value="">-- Chọn dự án phân công --</option>' +
+      AppState.projects.map(p => `<option value="${p.id}" ${u.project_id == p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+    projIn.value = u.project_id || '';
+  }
 
   handleUserRoleChange();
 
@@ -1728,6 +1840,21 @@ async function saveUser(event) {
   const status = document.getElementById('usr_status')?.value || 'ACTIVE';
   const project_id = document.getElementById('usr_project')?.value || '';
 
+  if (!id && !username) {
+    showToast('Vui lòng nhập tên đăng nhập', 'error');
+    return;
+  }
+
+  if (!full_name) {
+    showToast('Vui lòng nhập họ tên cán bộ / người sử dụng', 'error');
+    return;
+  }
+
+  if (!id && !password) {
+    showToast('Vui lòng nhập mật khẩu khởi tạo cho tài khoản', 'error');
+    return;
+  }
+
   if (role === 'SITE_USER' && !project_id) {
     showToast('Vui lòng chọn Dự án phân công cho tài khoản công trường', 'error');
     return;
@@ -1741,8 +1868,8 @@ async function saveUser(event) {
     project_id: role === 'SITE_USER' ? parseInt(project_id, 10) : null
   };
 
-  if (password) {
-    payload.password = password;
+  if (password && password.trim()) {
+    payload.password = password.trim();
   }
 
   try {
@@ -1759,7 +1886,7 @@ async function saveUser(event) {
     if (!res.ok) throw new Error(data.error || 'Lỗi khi lưu tài khoản');
 
     closeUserModal();
-    showToast(`✓ Đã lưu tài khoản ${data.username}`, 'success');
+    showToast(`✓ Đã lưu thành công tài khoản "${data.username}"!`, 'success');
     await loadUsers();
 
   } catch (err) {
@@ -1768,7 +1895,7 @@ async function saveUser(event) {
 }
 
 async function deleteUser(id, username) {
-  if (!confirm(`Bạn có chắc chắn muốn xóa tài khoản "${username}"?`)) return;
+  if (!confirm(`Bạn có chắc chắn muốn xóa vĩnh viễn tài khoản "${username}"?`)) return;
 
   try {
     const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
@@ -1780,6 +1907,128 @@ async function deleteUser(id, username) {
   } catch (err) {
     showToast(err.message, 'error');
   }
+}
+
+async function toggleUserStatus(id, currentStatus, username) {
+  const isSelf = AppState.currentUser && AppState.currentUser.id === id;
+  if (isSelf) {
+    showToast('Bạn không thể tự khóa tài khoản của chính mình', 'error');
+    return;
+  }
+  const newStatus = currentStatus === 'ACTIVE' ? 'BLOCKED' : 'ACTIVE';
+  const actionText = newStatus === 'BLOCKED' ? 'khóa' : 'mở khóa';
+
+  if (!confirm(`Bạn có chắc chắn muốn ${actionText} tài khoản "${username}"?`)) return;
+
+  try {
+    const res = await apiFetch(`/api/users/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi cập nhật trạng thái');
+
+    showToast(`✓ Đã ${actionText} thành công tài khoản "${username}"`, 'success');
+    await loadUsers();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function openResetPasswordModal(id, username, fullname) {
+  const idIn = document.getElementById('reset_pwd_user_id');
+  if (idIn) idIn.value = id;
+
+  const uEl = document.getElementById('reset_pwd_username');
+  if (uEl) uEl.textContent = username;
+
+  const fEl = document.getElementById('reset_pwd_fullname');
+  if (fEl) fEl.textContent = fullname || '-';
+
+  const pwdIn = document.getElementById('reset_new_pwd');
+  if (pwdIn) {
+    pwdIn.value = '';
+    pwdIn.type = 'password';
+  }
+
+  const icon = document.getElementById('resetPwdToggleIcon');
+  if (icon) icon.textContent = '👁️';
+
+  const modal = document.getElementById('resetPasswordModal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeResetPasswordModal() {
+  const modal = document.getElementById('resetPasswordModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function handleResetPasswordSubmit(event) {
+  if (event && event.preventDefault) event.preventDefault();
+
+  const id = document.getElementById('reset_pwd_user_id')?.value;
+  const newPassword = (document.getElementById('reset_new_pwd')?.value || '').trim();
+  const username = document.getElementById('reset_pwd_username')?.textContent || '';
+
+  if (!newPassword) {
+    showToast('Vui lòng nhập mật khẩu mới', 'error');
+    return;
+  }
+
+  try {
+    const res = await apiFetch(`/api/users/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi đặt lại mật khẩu');
+
+    closeResetPasswordModal();
+    showToast(`✓ Đã đổi mật khẩu thành công cho tài khoản "${username}"!`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function togglePasswordVisibility(inputId, iconId) {
+  const input = document.getElementById(inputId);
+  const icon = document.getElementById(iconId);
+  if (!input) return;
+
+  if (input.type === 'password') {
+    input.type = 'text';
+    if (icon) icon.textContent = '🙈';
+  } else {
+    input.type = 'password';
+    if (icon) icon.textContent = '👁️';
+  }
+}
+
+function fillQuickPassword(inputId, pwd) {
+  const input = document.getElementById(inputId);
+  if (input) {
+    input.value = pwd;
+    input.type = 'text';
+  }
+}
+
+function generateRandomPassword(inputId) {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz@#';
+  let pwd = '';
+  for (let i = 0; i < 8; i++) {
+    pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  const input = document.getElementById(inputId);
+  if (input) {
+    input.value = pwd;
+    input.type = 'text';
+  }
+}
+
+function openNewProjectFromUserModal() {
+  openProjectModal();
 }
 
 // --- 15.2 Cấu hình Dự Án ---
@@ -2394,6 +2643,15 @@ window.editUser = editUser;
 window.saveUser = saveUser;
 window.deleteUser = deleteUser;
 window.handleUserRoleChange = handleUserRoleChange;
+window.filterUserTableByProject = filterUserTableByProject;
+window.openResetPasswordModal = openResetPasswordModal;
+window.closeResetPasswordModal = closeResetPasswordModal;
+window.handleResetPasswordSubmit = handleResetPasswordSubmit;
+window.toggleUserStatus = toggleUserStatus;
+window.togglePasswordVisibility = togglePasswordVisibility;
+window.fillQuickPassword = fillQuickPassword;
+window.generateRandomPassword = generateRandomPassword;
+window.openNewProjectFromUserModal = openNewProjectFromUserModal;
 window.openProjectModal = openProjectModal;
 window.closeProjectModal = closeProjectModal;
 window.editProject = editProject;
