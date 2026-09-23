@@ -4,6 +4,8 @@
   "description": "Phần mềm quản lý xuất nhập kho vật liệu xây dựng công trường",
   "main": "src/server.js",
   "scripts": {
+    "build": "npm install",
+    "prestart": "npm install",
     "start": "node src/server.js"
   },
   "engines": {
