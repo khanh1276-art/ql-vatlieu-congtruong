@@ -1,18 +1,95 @@
 {
+  "id": "/?source=pwa",
   "name": "Quản Lý Kho Vật Liệu Công Trường",
   "short_name": "Kho Vật Liệu",
   "description": "Hệ thống quản lý xuất nhập kho vật liệu công trường, kiểm soát lượt xe, định mức và khóa sổ số liệu",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "orientation": "portrait",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
+  "lang": "vi",
+  "dir": "ltr",
+  "categories": [
+    "business",
+    "productivity",
+    "utilities"
+  ],
   "icons": [
     {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
       "src": "/icon.svg",
-      "sizes": "192x192 512x512",
+      "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
-  ]
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshot-desktop.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Bảng điều khiển và theo dõi tiến độ vật liệu trên máy tính"
+    },
+    {
+      "src": "/screenshot-mobile.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Giao diện đăng ký xe vào ra công trường trên điện thoại"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Đăng Ký Xe Vào",
+      "short_name": "Xe Vào",
+      "description": "Đăng ký lượt xe chở vật tư vào cổng công trường",
+      "url": "/#navCheckIn",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Bảng Điều Khiển Khối Lượng",
+      "short_name": "Báo Cáo",
+      "description": "Theo dõi tiến độ, số chuyến và khối lượng vật liệu lũy kế",
+      "url": "/#navDashboard",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "prefer_related_applications": false
 }

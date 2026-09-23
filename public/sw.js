@@ -1,12 +1,18 @@
 // Service Worker cho ứng dụng PWA Quản lý Kho Vật Liệu
-const CACHE_NAME = 'kho-vat-lieu-v1';
+const CACHE_NAME = 'kho-vat-lieu-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/style.css',
   '/app.js',
   '/manifest.json',
-  '/icon.svg'
+  '/icon.svg',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/icon-maskable-192.png',
+  '/icon-maskable-512.png',
+  '/screenshot-desktop.png',
+  '/screenshot-mobile.png'
 ];
 
 self.addEventListener('install', (event) => {
