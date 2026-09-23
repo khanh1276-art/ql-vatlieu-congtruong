@@ -255,7 +255,10 @@ const server = http.createServer(async (req, res) => {
       const username = (body.username || '').trim().toLowerCase();
       const password = body.password || '123456';
       const fullName = (body.full_name || '').trim();
-      const role = body.role === 'ADMIN' ? 'ADMIN' : 'SITE_USER';
+      let role = 'SITE_USER';
+      if (body.role === 'ADMIN') role = 'ADMIN';
+      else if (body.role === 'MODERATOR') role = 'MODERATOR';
+
       const projectId = role === 'SITE_USER' ? (parseInt(body.project_id, 10) || null) : null;
 
       if (!username || !fullName) {
@@ -305,8 +308,13 @@ const server = http.createServer(async (req, res) => {
         newPwdHash = hashPassword(body.password.trim());
       }
 
-      const role = body.role ? (body.role === 'ADMIN' ? 'ADMIN' : 'SITE_USER') : user.role;
-      const projectId = role === 'ADMIN' ? null : (body.project_id ? parseInt(body.project_id, 10) : null);
+      let role = user.role;
+      if (body.role) {
+        if (body.role === 'ADMIN') role = 'ADMIN';
+        else if (body.role === 'MODERATOR') role = 'MODERATOR';
+        else if (body.role === 'SITE_USER') role = 'SITE_USER';
+      }
+      const projectId = (role === 'ADMIN' || role === 'MODERATOR') ? null : (body.project_id ? parseInt(body.project_id, 10) : null);
 
       db.prepare(`
         UPDATE users SET
@@ -369,7 +377,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/projects' && method === 'POST') {
       const currentUser = getAuthenticatedUser(req);
-      if (currentUser && currentUser.role !== 'ADMIN') {
+      if (!currentUser || currentUser.role !== 'ADMIN') {
         return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền thêm dự án' });
       }
 
@@ -396,8 +404,8 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/api/projects/') && method === 'PUT') {
       const currentUser = getAuthenticatedUser(req);
-      if (currentUser && currentUser.role !== 'ADMIN') {
-        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền sửa dự án' });
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ có Admin hoặc Điều Hành mới có quyền sửa dự án' });
       }
 
       const id = parseInt(pathname.split('/')[3], 10);
@@ -424,17 +432,38 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/api/projects/') && method === 'DELETE') {
       const currentUser = getAuthenticatedUser(req);
-      if (currentUser && currentUser.role !== 'ADMIN') {
+      if (!currentUser || currentUser.role !== 'ADMIN') {
         return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa dự án' });
       }
 
       const id = parseInt(pathname.split('/')[3], 10);
-      const usedTickets = db.prepare('SELECT COUNT(*) as count FROM tickets WHERE project_id = ?').get(id).count;
-      if (usedTickets > 0) {
-        return sendJson(res, 400, { error: `Không thể xóa dự án này vì đã có ${usedTickets} lượt xe ghi nhận!` });
+      const isCascade = url.searchParams.get('cascade') === 'true';
+
+      const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+      if (!project) {
+        return sendJson(res, 404, { error: 'Không tìm thấy dự án' });
       }
+
+      const usedTickets = db.prepare('SELECT COUNT(*) as count FROM tickets WHERE project_id = ?').get(id).count;
+      if (usedTickets > 0 && !isCascade) {
+        return sendJson(res, 400, {
+          error: `Dự án "${project.name}" đang có ${usedTickets} lượt xe. Vui lòng xác nhận xóa kèm toàn bộ dữ liệu xe hoặc xóa từng phiếu trước!`,
+          hasTickets: true,
+          ticketCount: usedTickets
+        });
+      }
+
+      // Xóa tất cả phiếu của dự án nếu xóa cascade
+      if (usedTickets > 0 && isCascade) {
+        db.prepare('DELETE FROM tickets WHERE project_id = ?').run(id);
+      }
+
+      // Hủy liên kết xe và tài khoản khỏi dự án này
+      db.prepare('UPDATE vehicles SET project_id = NULL WHERE project_id = ?').run(id);
+      db.prepare('UPDATE users SET project_id = NULL WHERE project_id = ?').run(id);
+
       db.prepare('DELETE FROM projects WHERE id = ?').run(id);
-      return sendJson(res, 200, { success: true, id });
+      return sendJson(res, 200, { success: true, id, name: project.name, deletedTickets: isCascade ? usedTickets : 0 });
     }
 
     // =========================================================================
@@ -572,6 +601,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/vehicles' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ Admin hoặc Điều Hành mới có quyền thêm xe vào danh mục' });
+      }
+
       const body = await parseRequestBody(req);
       const plate = (body.plate_number || '').trim().toUpperCase();
       if (!plate) return sendJson(res, 400, { error: 'Biển số xe không được để trống' });
@@ -616,6 +650,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/vehicles/') && method === 'PUT') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ Admin hoặc Điều Hành mới có quyền sửa thông tin xe' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await parseRequestBody(req);
       const plate = (body.plate_number || '').trim().toUpperCase();
@@ -663,6 +702,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/vehicles/') && method === 'DELETE') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa xe trong danh mục' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       db.prepare('DELETE FROM vehicles WHERE id = ?').run(id);
       return sendJson(res, 200, { success: true, id });
@@ -686,6 +730,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/suppliers' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ Admin hoặc Điều Hành mới có quyền thêm nhà cung cấp' });
+      }
+
       const body = await parseRequestBody(req);
       const name = (body.name || '').trim();
       const code = (body.code || '').trim().toUpperCase() || `NCC-${Date.now().toString().slice(-4)}`;
@@ -708,6 +757,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/suppliers/') && method === 'PUT') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ Admin hoặc Điều Hành mới có quyền sửa thông tin nhà cung cấp' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await parseRequestBody(req);
       db.prepare(`
@@ -731,6 +785,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/suppliers/') && method === 'DELETE') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa nhà cung cấp' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       db.prepare('DELETE FROM suppliers WHERE id = ?').run(id);
       return sendJson(res, 200, { success: true, id });
@@ -750,6 +809,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/materials' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ Admin hoặc Điều Hành mới có quyền thêm loại vật liệu' });
+      }
+
       const body = await parseRequestBody(req);
       const name = (body.name || '').trim();
       const code = (body.code || '').trim().toUpperCase() || `VL-${Date.now().toString().slice(-4)}`;
@@ -773,6 +837,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/materials/') && method === 'PUT') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || (currentUser.role !== 'ADMIN' && currentUser.role !== 'MODERATOR')) {
+        return sendJson(res, 403, { error: 'Chỉ Admin hoặc Điều Hành mới có quyền sửa loại vật liệu' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await parseRequestBody(req);
       db.prepare(`
@@ -794,6 +863,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname.startsWith('/api/materials/') && method === 'DELETE') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa loại vật liệu' });
+      }
+
       const id = parseInt(pathname.split('/')[3], 10);
       db.prepare('DELETE FROM materials WHERE id = ?').run(id);
       return sendJson(res, 200, { success: true, id });
@@ -1057,21 +1131,27 @@ const server = http.createServer(async (req, res) => {
       const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
       if (!ticket) return sendJson(res, 404, { error: 'Không tìm thấy phiếu' });
 
-      // KIỂM TRA QUY TẮC KHÓA SỐ LIỆU QUA NGÀY CHO TÀI KHOẢN CÔNG TRƯỜNG
+      // KIỂM TRA QUY TẮC KHÓA SỐ LIỆU QUA 24H CHO TÀI KHOẢN CÔNG TRƯỜNG (SITE_USER)
       if (currentUser && currentUser.role === 'SITE_USER') {
-        const ticketDate = ticket.time_in.split(' ')[0];
-        const todayDate = getLocalDateString();
-
-        if (ticketDate !== todayDate) {
-          return sendJson(res, 403, {
-            error: `🔒 Số liệu của ngày ${ticketDate} đã bị khóa sổ (chỉ được sửa trong ngày). Vui lòng liên hệ Admin văn phòng để điều chỉnh!`
-          });
-        }
-
         if (ticket.project_id !== currentUser.project_id) {
           return sendJson(res, 403, { error: 'Bạn không có quyền điều chỉnh số liệu của dự án khác!' });
         }
+
+        let hoursElapsed = 0;
+        try {
+          const tTime = new Date(ticket.time_in.replace(' ', 'T')).getTime();
+          hoursElapsed = (Date.now() - tTime) / (1000 * 60 * 60);
+        } catch (e) {
+          hoursElapsed = 999;
+        }
+
+        if (hoursElapsed > 24) {
+          return sendJson(res, 403, {
+            error: `🔒 Phiếu xe này đã quá thời hạn 24 giờ (${Math.round(hoursElapsed)}h) và đã bị khóa sổ. Chỉ Admin hoặc Quản lý / Điều Hành mới có quyền điều chỉnh!`
+          });
+        }
       }
+      // ADMIN và MODERATOR có toàn quyền sửa mọi phiếu ở mọi dự án và mọi ngày!
 
       db.prepare(`
         UPDATE tickets SET
@@ -1112,31 +1192,19 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, updated);
     }
 
-    // Hủy phiếu (ÁP DỤNG KHÓA SỐ LIỆU QUA NGÀY)
+    // Xóa vĩnh viễn phiếu xe (CHỈ DÀNH RIÊNG CHO ADMIN ĐỂ DỌN DẸP DỮ LIỆU)
     if (pathname.match(/^\/api\/tickets\/\d+$/) && method === 'DELETE') {
       const currentUser = getAuthenticatedUser(req);
-      const id = parseInt(pathname.split('/')[3], 10);
-
-      const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
-      if (!ticket) return sendJson(res, 404, { error: 'Không tìm thấy phiếu' });
-
-      if (currentUser && currentUser.role === 'SITE_USER') {
-        const ticketDate = ticket.time_in.split(' ')[0];
-        const todayDate = getLocalDateString();
-
-        if (ticketDate !== todayDate) {
-          return sendJson(res, 403, {
-            error: `🔒 Không thể hủy phiếu của ngày ${ticketDate} do đã khóa sổ qua ngày. Vui lòng liên hệ Admin văn phòng!`
-          });
-        }
-
-        if (ticket.project_id !== currentUser.project_id) {
-          return sendJson(res, 403, { error: 'Bạn không có quyền can thiệp số liệu của dự án khác!' });
-        }
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ có Admin văn phòng mới có quyền xóa dữ liệu phiếu xe' });
       }
 
-      db.prepare("UPDATE tickets SET status = 'CANCELLED' WHERE id = ?").run(id);
-      return sendJson(res, 200, { success: true, id });
+      const id = parseInt(pathname.split('/')[3], 10);
+      const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
+      if (!ticket) return sendJson(res, 404, { error: 'Không tìm thấy phiếu xe cần xóa' });
+
+      db.prepare('DELETE FROM tickets WHERE id = ?').run(id);
+      return sendJson(res, 200, { success: true, id, ticket_code: ticket.ticket_code });
     }
 
     // =========================================================================
