@@ -1,0 +1,15 @@
+{
+  "name": "ql-vatlieu-congtruong",
+  "version": "1.0.0",
+  "description": "Phần mềm quản lý xuất nhập kho vật liệu xây dựng công trường",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "keywords": ["construction", "materials", "inventory", "management"],
+  "author": "Antigravity",
+  "license": "ISC"
+}

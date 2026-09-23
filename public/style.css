@@ -1,0 +1,115 @@
+/* Tùy chỉnh CSS giao diện Quản lý Vật liệu Công trường */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');
+
+:root {
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
+  --success: #15803d;
+  --warning: #b45309;
+  --danger: #b91c1c;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono-plate {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* Biển số xe style Việt Nam */
+.license-plate-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  background: #ffffff;
+  color: #0f172a;
+  border: 2px solid #0f172a;
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Card hover */
+.card-hover {
+  transition: all 0.2s ease;
+}
+.card-hover:hover {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.07), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+}
+
+/* Pulsing dot cho xe đang trong bãi */
+.pulse-dot {
+  position: relative;
+}
+.pulse-dot::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background-color: currentColor;
+  transform: translate(-50%, -50%);
+  animation: pulse-ring 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+  opacity: 0.6;
+}
+
+@keyframes pulse-ring {
+  0% { transform: translate(-50%, -50%) scale(0.8); opacity: 0.8; }
+  100% { transform: translate(-50%, -50%) scale(2.5); opacity: 0; }
+}
+
+/* Tùy chỉnh chế độ in phiếu và in báo cáo (Print Stylesheet) */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt;
+  }
+
+  .no-print, header, nav, #navTabs, .btn-action, .toast-container, .modal-backdrop {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .card, .table-container {
+    box-shadow: none !important;
+    border: 1px solid #94a3b8 !important;
+    break-inside: avoid;
+  }
+
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  th, td {
+    border: 1px solid #475569 !important;
+    padding: 6px 8px !important;
+    font-size: 10pt !important;
+  }
+
+  th {
+    background-color: #f1f5f9 !important;
+    color: #000000 !important;
+  }
+
+  /* Định dạng in phiếu kiểm đếm kích thước nhỏ / khổ giấy A5/A4 */
+  .printable-ticket {
+    width: 100% !important;
+    max-width: 480px !important;
+    margin: 0 auto !important;
+    padding: 16px !important;
+    border: 2px dashed #000000 !important;
+  }
+}
