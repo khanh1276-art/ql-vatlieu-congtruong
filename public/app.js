@@ -131,16 +131,20 @@ async function checkAuth() {
 }
 
 async function handleLogin(e) {
-  e.preventDefault();
-  const username = document.getElementById('loginUsername').value.trim();
-  const password = document.getElementById('loginPassword').value;
+  if (e && e.preventDefault) e.preventDefault();
+  const username = (document.getElementById('loginUsername')?.value || '').trim();
+  const password = document.getElementById('loginPassword')?.value || '';
   const errorDiv = document.getElementById('loginError');
   const btn = document.getElementById('btnLoginSubmit');
 
-  errorDiv.classList.add('hidden');
-  errorDiv.textContent = '';
-  btn.disabled = true;
-  btn.innerHTML = '<span>⏳ Đang xác thực...</span>';
+  if (errorDiv) {
+    errorDiv.classList.add('hidden');
+    errorDiv.textContent = '';
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>⏳ Đang xác thực...</span>';
+  }
 
   try {
     const res = await fetch('/api/auth/login', {
@@ -156,11 +160,15 @@ async function handleLogin(e) {
 
     onLoginSuccess(data.user, data.token, true);
   } catch (err) {
-    errorDiv.textContent = err.message;
-    errorDiv.classList.remove('hidden');
+    if (errorDiv) {
+      errorDiv.textContent = err.message;
+      errorDiv.classList.remove('hidden');
+    }
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<span>ĐĂNG NHẬP HỆ THỐNG</span>';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span>ĐĂNG NHẬP HỆ THỐNG</span>';
+    }
   }
 }
 
@@ -350,6 +358,7 @@ function populateProjectDropdowns() {
       checkinSel.disabled = true;
     } else {
       checkinSel.disabled = false;
+      if (AppState.selectedProjectId) checkinSel.value = AppState.selectedProjectId;
     }
   }
 }
@@ -360,13 +369,15 @@ function handleHeaderProjectChange() {
 
   // Đồng bộ sang form checkin và bộ lọc báo cáo
   const checkinSel = document.getElementById('checkin_project');
-  if (checkinSel && AppState.selectedProjectId) checkinSel.value = AppState.selectedProjectId;
+  if (checkinSel && AppState.selectedProjectId && !checkinSel.disabled) {
+    checkinSel.value = AppState.selectedProjectId;
+  }
 
   const dailySel = document.getElementById('dailyProjectFilter');
-  if (dailySel) dailySel.value = AppState.selectedProjectId;
+  if (dailySel && !dailySel.disabled) dailySel.value = AppState.selectedProjectId;
 
   const cumSel = document.getElementById('cumProjectFilter');
-  if (cumSel) cumSel.value = AppState.selectedProjectId;
+  if (cumSel && !cumSel.disabled) cumSel.value = AppState.selectedProjectId;
 
   // Làm mới dữ liệu tab hiện tại
   if (AppState.currentTab === 'checkin') {
@@ -488,12 +499,27 @@ async function loadVehicles() {
 // ============================================================================
 // 8. FORM CHECK-IN: GỢI Ý BIỂN SỐ & TÍNH TOÁN QUY CÁCH
 // ============================================================================
-function handlePlateInput(e) {
-  const query = e.target.value.trim().toUpperCase();
-  e.target.value = query;
+function getCheckinUnit() {
+  const hiddenUnit = document.getElementById('checkin_unit');
+  if (hiddenUnit && hiddenUnit.value) return hiddenUnit.value;
+  const matSel = document.getElementById('checkin_material');
+  if (matSel && matSel.selectedIndex >= 0) {
+    const opt = matSel.options[matSel.selectedIndex];
+    if (opt && opt.dataset && opt.dataset.unit) return opt.dataset.unit;
+  }
+  const badge = document.getElementById('checkinStdUnitBadge') || document.getElementById('unitBadgeStd');
+  if (badge && badge.textContent) return badge.textContent.trim();
+  return 'm³';
+}
+
+function handlePlateInput(arg) {
+  const input = document.getElementById('checkin_plate');
+  const query = (typeof arg === 'string' ? arg : (arg?.target?.value || (input ? input.value : ''))).trim().toUpperCase();
+  if (input && input.value !== query) input.value = query;
 
   clearTimeout(AppState.plateDebounceTimer);
   const box = document.getElementById('plateSuggestions');
+  if (!box) return;
 
   if (query.length < 2) {
     box.classList.add('hidden');
@@ -526,119 +552,161 @@ function handlePlateInput(e) {
 function selectVehicleSuggestion(plate) {
   const v = AppState.vehicles.find(item => item.plate_number === plate);
   const box = document.getElementById('plateSuggestions');
-  box.classList.add('hidden');
+  if (box) box.classList.add('hidden');
 
   if (!v) return;
 
-  document.getElementById('checkin_plate').value = v.plate_number;
+  const plateIn = document.getElementById('checkin_plate');
+  if (plateIn) plateIn.value = v.plate_number;
 
-  // Điền NCC nếu có
-  if (v.supplier_id) {
-    document.getElementById('checkin_supplier').value = v.supplier_id;
-  }
+  const modelIn = document.getElementById('checkin_model');
+  if (modelIn) modelIn.value = v.model_type || '';
 
-  // Điền Dự án nếu có và chưa chọn
+  const suppSel = document.getElementById('checkin_supplier');
+  if (suppSel && v.supplier_id) suppSel.value = v.supplier_id;
+
   const projSel = document.getElementById('checkin_project');
-  if (v.project_id && (!projSel.value || !projSel.disabled)) {
+  if (projSel && v.project_id && !projSel.disabled) {
     projSel.value = v.project_id;
   }
 
-  // Điền Vật liệu mặc định nếu có
   if (v.default_material_id) {
     const matSel = document.getElementById('checkin_material');
-    matSel.value = v.default_material_id;
-    onMaterialChange();
+    if (matSel) {
+      matSel.value = v.default_material_id;
+      handleCheckinMaterialChange();
+    }
   }
 
-  // Điền kích thước & định mức
-  document.getElementById('checkin_length').value = v.length || '';
-  document.getElementById('checkin_width').value = v.width || '';
-  document.getElementById('checkin_height').value = v.height || '';
-  document.getElementById('checkin_std_volume').value = v.standard_volume || '';
-  document.getElementById('checkin_unit').value = v.unit || 'm³';
+  const lIn = document.getElementById('checkin_length');
+  if (lIn) lIn.value = v.length || '';
+  const wIn = document.getElementById('checkin_width');
+  if (wIn) wIn.value = v.width || '';
+  const hIn = document.getElementById('checkin_height');
+  if (hIn) hIn.value = v.height || '';
 
-  calcGeoVolume();
+  const stdIn = document.getElementById('checkin_std_volume');
+  if (stdIn) stdIn.value = v.standard_volume || '';
+
+  const unit = v.unit || 'm³';
+  const hiddenUnit = document.getElementById('checkin_unit');
+  if (hiddenUnit) hiddenUnit.value = unit;
+
+  const stdBadge = document.getElementById('checkinStdUnitBadge') || document.getElementById('unitBadgeStd');
+  if (stdBadge) stdBadge.textContent = unit;
+  const actBadge = document.getElementById('checkinActualUnitBadge') || document.getElementById('unitBadgeActual');
+  if (actBadge) actBadge.textContent = unit;
+
+  calculateGeoVolume();
+  syncStdVolumeToActual();
 
   const hint = document.getElementById('plateHint');
-  hint.textContent = `✓ Đã khớp xe ${v.plate_number}: Định mức ${v.standard_volume.toFixed(2)} ${v.unit || 'm³'}`;
-  hint.className = 'text-[11px] text-emerald-600 mt-1 font-medium';
-}
-
-function onMaterialChange() {
-  const sel = document.getElementById('checkin_material');
-  const opt = sel.options[sel.selectedIndex];
-  if (!opt || !opt.dataset.unit) return;
-
-  const unit = opt.dataset.unit;
-  document.getElementById('checkin_unit').value = unit;
-
-  document.getElementById('unitBadgeStd').textContent = unit;
-  document.getElementById('unitBadgeActual').textContent = unit;
-
-  calcGeoVolume();
-}
-
-function toggleManualAdjustment() {
-  const isChecked = document.getElementById('checkin_manual_toggle').checked;
-  const wrap = document.getElementById('manualAdjustWrap');
-  const actualIn = document.getElementById('checkin_actual_volume');
-  const reasonIn = document.getElementById('checkin_adjust_reason');
-
-  if (isChecked) {
-    wrap.classList.remove('hidden');
-    actualIn.setAttribute('required', 'required');
-    reasonIn.setAttribute('required', 'required');
-    if (!actualIn.value) {
-      actualIn.value = document.getElementById('checkin_std_volume').value || '';
-    }
-  } else {
-    wrap.classList.add('hidden');
-    actualIn.removeAttribute('required');
-    reasonIn.removeAttribute('required');
+  if (hint) {
+    hint.textContent = `✓ Đã khớp xe ${v.plate_number}: Định mức ${v.standard_volume.toFixed(2)} ${unit}`;
+    hint.className = 'text-xs text-emerald-600 mt-1 font-semibold';
   }
 }
 
-function calcGeoVolume() {
-  const l = parseFloat(document.getElementById('checkin_length').value) || 0;
-  const w = parseFloat(document.getElementById('checkin_width').value) || 0;
-  const h = parseFloat(document.getElementById('checkin_height').value) || 0;
+function handleCheckinMaterialChange() {
+  const sel = document.getElementById('checkin_material');
+  if (!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  const unit = opt?.dataset?.unit || 'm³';
+
+  const hiddenUnit = document.getElementById('checkin_unit');
+  if (hiddenUnit) hiddenUnit.value = unit;
+
+  const stdBadge = document.getElementById('checkinStdUnitBadge') || document.getElementById('unitBadgeStd');
+  if (stdBadge) stdBadge.textContent = unit;
+
+  const actualBadge = document.getElementById('checkinActualUnitBadge') || document.getElementById('unitBadgeActual');
+  if (actualBadge) actualBadge.textContent = unit;
+
+  calculateGeoVolume();
+}
+const onMaterialChange = handleCheckinMaterialChange;
+
+function calculateGeoVolume() {
+  const l = parseFloat(document.getElementById('checkin_length')?.value) || 0;
+  const w = parseFloat(document.getElementById('checkin_width')?.value) || 0;
+  const h = parseFloat(document.getElementById('checkin_height')?.value) || 0;
   const vol = l * w * h;
 
   const geoLabel = document.getElementById('calculatedGeoVol');
-  const unit = document.getElementById('checkin_unit').value || 'm³';
+  if (geoLabel) {
+    geoLabel.textContent = vol > 0 ? `Thể tích: ${vol.toFixed(2)} m³` : 'Thể tích: 0.00 m³';
+  }
 
-  if (vol > 0) {
-    geoLabel.textContent = `Thể tích: ${vol.toFixed(2)} m³`;
-    const stdIn = document.getElementById('checkin_std_volume');
-    if (!stdIn.value && unit === 'm³') {
-      stdIn.value = vol.toFixed(2);
+  const unit = getCheckinUnit();
+  const stdIn = document.getElementById('checkin_std_volume');
+  if (stdIn && !stdIn.value && vol > 0 && unit === 'm³') {
+    stdIn.value = vol.toFixed(2);
+    syncStdVolumeToActual();
+  }
+}
+const calcGeoVolume = calculateGeoVolume;
+
+function syncStdVolumeToActual() {
+  const stdVal = document.getElementById('checkin_std_volume')?.value;
+  const actualIn = document.getElementById('checkin_actual_volume');
+  const manualToggle = document.getElementById('checkin_manual_toggle');
+  if (actualIn && (!manualToggle || !manualToggle.checked) && stdVal) {
+    actualIn.value = stdVal;
+  }
+}
+
+function toggleManualAdjustment() {
+  const isChecked = !!document.getElementById('checkin_manual_toggle')?.checked;
+  const box = document.getElementById('manualAdjustmentBox') || document.getElementById('manualAdjustWrap');
+  const actualIn = document.getElementById('checkin_actual_volume');
+  const reasonIn = document.getElementById('checkin_adjust_reason');
+
+  if (box) {
+    if (isChecked) {
+      box.classList.remove('hidden');
+      if (actualIn) {
+        actualIn.setAttribute('required', 'required');
+        if (!actualIn.value) {
+          actualIn.value = document.getElementById('checkin_std_volume')?.value || '';
+        }
+      }
+      if (reasonIn) reasonIn.setAttribute('required', 'required');
+    } else {
+      box.classList.add('hidden');
+      if (actualIn) {
+        actualIn.removeAttribute('required');
+        actualIn.value = document.getElementById('checkin_std_volume')?.value || '';
+      }
+      if (reasonIn) {
+        reasonIn.removeAttribute('required');
+        reasonIn.value = '';
+      }
     }
-  } else {
-    geoLabel.textContent = 'Thể tích: 0.00 m³';
   }
 }
 
 // ============================================================================
 // 9. CHECK-IN XE VÀO CỔNG
 // ============================================================================
-async function submitCheckIn(event) {
-  event.preventDefault();
+async function handleCheckIn(event) {
+  if (event && event.preventDefault) event.preventDefault();
 
-  const plate = document.getElementById('checkin_plate').value.trim().toUpperCase();
-  const projectId = document.getElementById('checkin_project').value;
-  const supplierId = document.getElementById('checkin_supplier').value;
-  const materialId = document.getElementById('checkin_material').value;
-  const unit = document.getElementById('checkin_unit').value || 'm³';
+  const plate = (document.getElementById('checkin_plate')?.value || '').trim().toUpperCase();
+  const projectId = document.getElementById('checkin_project')?.value || '';
+  const supplierId = document.getElementById('checkin_supplier')?.value || '';
+  const materialId = document.getElementById('checkin_material')?.value || '';
+  const modelType = (document.getElementById('checkin_model')?.value || '').trim();
+  const unit = getCheckinUnit();
 
-  const length = parseFloat(document.getElementById('checkin_length').value) || 0;
-  const width = parseFloat(document.getElementById('checkin_width').value) || 0;
-  const height = parseFloat(document.getElementById('checkin_height').value) || 0;
-  const stdVolume = parseFloat(document.getElementById('checkin_std_volume').value) || 0;
+  const length = parseFloat(document.getElementById('checkin_length')?.value) || 0;
+  const width = parseFloat(document.getElementById('checkin_width')?.value) || 0;
+  const height = parseFloat(document.getElementById('checkin_height')?.value) || 0;
+  const stdVolume = parseFloat(document.getElementById('checkin_std_volume')?.value) || 0;
 
-  const isManual = document.getElementById('checkin_manual_toggle').checked;
-  const actualVolume = isManual ? (parseFloat(document.getElementById('checkin_actual_volume').value) || 0) : stdVolume;
-  const adjustReason = isManual ? document.getElementById('checkin_adjust_reason').value.trim() : '';
-  const notes = document.getElementById('checkin_notes').value.trim();
+  const isManual = !!document.getElementById('checkin_manual_toggle')?.checked;
+  const actualVolume = isManual ? (parseFloat(document.getElementById('checkin_actual_volume')?.value) || 0) : stdVolume;
+  const adjustReason = isManual ? (document.getElementById('checkin_adjust_reason')?.value || '').trim() : '';
+  const notes = (document.getElementById('checkin_notes')?.value || '').trim();
 
   if (!plate) {
     showToast('Vui lòng nhập biển số xe', 'error');
@@ -671,6 +739,7 @@ async function submitCheckIn(event) {
 
   const payload = {
     plate_number: plate,
+    model_type: modelType,
     project_id: parseInt(projectId, 10),
     supplier_id: parseInt(supplierId, 10),
     material_id: parseInt(materialId, 10),
@@ -686,8 +755,10 @@ async function submitCheckIn(event) {
   };
 
   const btn = document.getElementById('btnSubmitCheckIn');
-  btn.disabled = true;
-  btn.innerHTML = '<span>⏳ Đang ghi nhận...</span>';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>⏳ Đang ghi nhận...</span>';
+  }
 
   try {
     const res = await apiFetch('/api/tickets/checkin', {
@@ -706,16 +777,29 @@ async function submitCheckIn(event) {
     loadVehicles();
 
     // Reset form
-    document.getElementById('checkInForm').reset();
+    const form = document.getElementById('checkInForm');
+    if (form) form.reset();
+
     if (AppState.currentUser?.role === 'SITE_USER') {
-      document.getElementById('checkin_project').value = AppState.currentUser.project_id;
+      const projSel = document.getElementById('checkin_project');
+      if (projSel) projSel.value = AppState.currentUser.project_id;
     } else if (AppState.selectedProjectId) {
-      document.getElementById('checkin_project').value = AppState.selectedProjectId;
+      const projSel = document.getElementById('checkin_project');
+      if (projSel) projSel.value = AppState.selectedProjectId;
     }
-    document.getElementById('checkin_manual_toggle').checked = false;
+
+    const manualToggle = document.getElementById('checkin_manual_toggle');
+    if (manualToggle) manualToggle.checked = false;
     toggleManualAdjustment();
-    document.getElementById('calculatedGeoVol').textContent = 'Thể tích: 0.00 m³';
-    document.getElementById('plateHint').textContent = 'Gõ biển số để hệ thống tự động điền quy cách xe đã lưu';
+
+    const geoLabel = document.getElementById('calculatedGeoVol');
+    if (geoLabel) geoLabel.textContent = 'Thể tích: 0.00 m³';
+
+    const hint = document.getElementById('plateHint');
+    if (hint) {
+      hint.textContent = 'Gõ biển số để hệ thống tự động điền quy cách xe đã lưu';
+      hint.className = 'text-xs text-slate-500 mt-1';
+    }
 
     loadInYardTickets();
     loadDashboardStats();
@@ -725,10 +809,13 @@ async function submitCheckIn(event) {
   } catch (err) {
     showToast(err.message, 'error');
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<span>✅</span><span>XÁC NHẬN XE VÀO CỔNG</span>';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<span>✅</span><span>XÁC NHẬN XE VÀO CỔNG</span>';
+    }
   }
 }
+const submitCheckIn = handleCheckIn;
 
 // ============================================================================
 // 10. GIÁM SÁT XE TRONG BÃI & XÁC NHẬN RA (CHECK-OUT)
@@ -745,13 +832,24 @@ async function loadInYardTickets(showLoading = true) {
       url += `?projectId=${AppState.selectedProjectId}`;
     }
     const res = await apiFetch(url);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+
     const tickets = await res.json();
     AppState.inYardTickets = tickets;
 
     const count = tickets.length;
-    document.getElementById('headerInYardCount').textContent = count;
-    document.getElementById('navInYardBadge').textContent = count;
-    document.getElementById('inYardTitleCount').textContent = `${count} xe`;
+    const headerInYard = document.getElementById('headerInYardCount');
+    if (headerInYard) headerInYard.textContent = count;
+
+    const navInYard = document.getElementById('navInYardBadge');
+    if (navInYard) navInYard.textContent = count;
+
+    const titleCount = document.getElementById('inYardTitleCount');
+    if (titleCount) titleCount.textContent = `${count} xe`;
+
     const dashInYard = document.getElementById('dashInYard');
     if (dashInYard) dashInYard.textContent = count;
 
@@ -802,7 +900,7 @@ async function loadInYardTickets(showLoading = true) {
               <div class="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200">
                 <span>KT: ${dim}</span>
                 <span class="font-bold text-slate-900 font-mono text-xs">
-                  ${t.actual_volume.toFixed(2)} ${t.unit || 'm³'}
+                  ${Number(t.actual_volume).toFixed(2)} ${t.unit || 'm³'}
                 </span>
               </div>
             </div>
@@ -828,7 +926,7 @@ async function loadInYardTickets(showLoading = true) {
   } catch (err) {
     console.error('Lỗi nạp xe trong bãi:', err);
     if (container) {
-      container.innerHTML = '<div class="py-8 text-center text-red-500 text-xs">Lỗi nạp danh sách xe trong bãi</div>';
+      container.innerHTML = `<div class="py-8 text-center text-red-500 text-xs">Lỗi nạp danh sách xe trong bãi: ${escapeHtml(err.message)}</div>`;
     }
   }
 }
@@ -839,34 +937,57 @@ function openCheckOutModal(ticketId) {
 
   AppState.activeCheckoutTicket = t;
 
-  document.getElementById('coutTicketCode').textContent = t.ticket_code;
-  document.getElementById('coutProject').textContent = t.project_name || '-';
-  document.getElementById('coutPlate').textContent = t.plate_number;
-  document.getElementById('coutSupplier').textContent = t.supplier_name;
-  document.getElementById('coutMaterial').textContent = t.material_name;
-  document.getElementById('coutTimeIn').textContent = t.time_in;
-  document.getElementById('coutTimeOut').value = getLocalDateTime();
-  document.getElementById('coutActualVolume').value = t.actual_volume;
-  document.getElementById('coutUnitBadge').textContent = t.unit || 'm³';
-  document.getElementById('coutAdjustmentReason').value = t.adjustment_reason || '';
-  document.getElementById('coutNotes').value = '';
+  const codeEl = document.getElementById('coutTicketCode');
+  if (codeEl) codeEl.textContent = t.ticket_code;
 
-  document.getElementById('checkOutModal').classList.remove('hidden');
+  const projEl = document.getElementById('coutProject');
+  if (projEl) projEl.textContent = t.project_name || '-';
+
+  const plateEl = document.getElementById('coutPlate');
+  if (plateEl) plateEl.textContent = t.plate_number;
+
+  const suppEl = document.getElementById('coutSupplier');
+  if (suppEl) suppEl.textContent = t.supplier_name;
+
+  const matEl = document.getElementById('coutMaterial');
+  if (matEl) matEl.textContent = t.material_name;
+
+  const inEl = document.getElementById('coutTimeIn');
+  if (inEl) inEl.textContent = t.time_in;
+
+  const outEl = document.getElementById('coutTimeOut');
+  if (outEl) outEl.value = getLocalDateTime();
+
+  const volEl = document.getElementById('coutActualVolume');
+  if (volEl) volEl.value = t.actual_volume;
+
+  const unitBadge = document.getElementById('coutUnitBadge');
+  if (unitBadge) unitBadge.textContent = t.unit || 'm³';
+
+  const reasonEl = document.getElementById('coutAdjustmentReason');
+  if (reasonEl) reasonEl.value = t.adjustment_reason || '';
+
+  const notesEl = document.getElementById('coutNotes');
+  if (notesEl) notesEl.value = '';
+
+  const modal = document.getElementById('checkOutModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeCheckOutModal() {
   AppState.activeCheckoutTicket = null;
-  document.getElementById('checkOutModal').classList.add('hidden');
+  const modal = document.getElementById('checkOutModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 async function submitCheckOut() {
   if (!AppState.activeCheckoutTicket) return;
 
   const id = AppState.activeCheckoutTicket.id;
-  const timeOut = document.getElementById('coutTimeOut').value.trim();
-  const actualVolume = parseFloat(document.getElementById('coutActualVolume').value);
-  const adjustmentReason = document.getElementById('coutAdjustmentReason').value.trim();
-  const notes = document.getElementById('coutNotes').value.trim();
+  const timeOut = (document.getElementById('coutTimeOut')?.value || '').trim();
+  const actualVolume = parseFloat(document.getElementById('coutActualVolume')?.value);
+  const adjustmentReason = (document.getElementById('coutAdjustmentReason')?.value || '').trim();
+  const notes = (document.getElementById('coutNotes')?.value || '').trim();
   const unit = AppState.activeCheckoutTicket.unit || 'm³';
 
   if (isNaN(actualVolume) || actualVolume <= 0) {
@@ -912,8 +1033,9 @@ async function loadDashboardStats() {
       url += `?projectId=${AppState.selectedProjectId}`;
     }
     const res = await apiFetch(url);
-    const data = await res.json();
+    if (!res.ok) return;
 
+    const data = await res.json();
     const stats = data.stats || {};
 
     const dashTrips = document.getElementById('dashTotalTrips');
@@ -940,8 +1062,25 @@ async function loadDashboardStats() {
       }
     }
 
+    // Bảng cơ cấu vật liệu nhập hôm nay
+    const matTbody = document.getElementById('dashMaterialBreakdownTable');
+    if (matTbody) {
+      if (!data.materialBreakdown || data.materialBreakdown.length === 0) {
+        matTbody.innerHTML = `<tr><td colspan="4" class="text-center py-4 text-slate-400">Chưa có vật liệu nhập hôm nay</td></tr>`;
+      } else {
+        matTbody.innerHTML = data.materialBreakdown.map(m => `
+          <tr class="hover:bg-slate-50 transition">
+            <td class="px-3 py-2 font-medium text-slate-800">${escapeHtml(m.material_name)}</td>
+            <td class="px-3 py-2 text-center font-bold text-blue-700">${escapeHtml(m.unit || 'm³')}</td>
+            <td class="px-3 py-2 text-center font-mono">${m.trips}</td>
+            <td class="px-3 py-2 text-right font-mono font-bold text-emerald-700">${Number(m.volume).toFixed(2)}</td>
+          </tr>
+        `).join('');
+      }
+    }
+
     // Biểu đồ lưu lượng xe theo giờ
-    renderHourlyChart(data.hourly || []);
+    renderHourlyChart(data.hourlyDistribution || data.hourly || []);
 
   } catch (err) {
     console.error('Lỗi tải thống kê dashboard:', err);
@@ -949,7 +1088,7 @@ async function loadDashboardStats() {
 }
 
 function renderHourlyChart(hourlyData) {
-  const canvas = document.getElementById('hourlyTrafficChart');
+  const canvas = document.getElementById('hourlyChart') || document.getElementById('hourlyTrafficChart');
   if (!canvas) return;
 
   const labels = [];
@@ -958,7 +1097,7 @@ function renderHourlyChart(hourlyData) {
     const pad = String(h).padStart(2, '0');
     labels.push(`${pad}:00`);
     const found = hourlyData.find(d => parseInt(d.hour, 10) === h);
-    counts.push(found ? found.count : 0);
+    counts.push(found ? (found.trips || found.count || 0) : 0);
   }
 
   if (AppState.hourlyChart) {
@@ -1032,12 +1171,20 @@ async function loadDailyReport() {
 
     const summary = data.summary || {};
 
-    document.getElementById('dailyTotalTrips').textContent = summary.total_trips || 0;
-    document.getElementById('dailyProjectsCount').textContent = summary.total_projects || 0;
-    document.getElementById('dailySuppliersCount').textContent = summary.total_suppliers || 0;
-    document.getElementById('dailyVehiclesCount').textContent = summary.total_vehicles || 0;
+    const elTotal = document.getElementById('dailyTotalTrips');
+    if (elTotal) elTotal.textContent = summary.total_trips || 0;
 
-    document.getElementById('dailyTableRecordCount').textContent = `${AppState.dailyTickets.length} chuyến xe`;
+    const elProj = document.getElementById('dailyProjectsCount');
+    if (elProj) elProj.textContent = summary.total_projects || 0;
+
+    const elSupp = document.getElementById('dailySuppliersCount');
+    if (elSupp) elSupp.textContent = summary.total_suppliers || 0;
+
+    const elVeh = document.getElementById('dailyVehiclesCount');
+    if (elVeh) elVeh.textContent = summary.total_vehicles || 0;
+
+    const elRec = document.getElementById('dailyTableRecordCount');
+    if (elRec) elRec.textContent = `${AppState.dailyTickets.length} chuyến xe`;
 
     // Bảng theo Vật liệu & ĐVT
     const matTbody = document.getElementById('dailyByMaterialTable');
@@ -1047,7 +1194,7 @@ async function loadDailyReport() {
           <td class="px-2 py-1.5 font-medium text-slate-800">${escapeHtml(m.material_name)}</td>
           <td class="px-2 py-1.5 text-center font-bold text-blue-700">${escapeHtml(m.unit || 'm³')}</td>
           <td class="px-2 py-1.5 text-center font-mono">${m.trips}</td>
-          <td class="px-2 py-1.5 text-right font-mono font-bold text-emerald-700">${m.volume.toFixed(2)}</td>
+          <td class="px-2 py-1.5 text-right font-mono font-bold text-emerald-700">${Number(m.volume).toFixed(2)}</td>
         </tr>
       `).join('') || `<tr><td colspan="4" class="text-center py-2 text-slate-400">Không có dữ liệu</td></tr>`;
     }
@@ -1082,9 +1229,6 @@ async function loadDailyReport() {
             ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700">Đã xong</span>`
             : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Hủy</span>`);
 
-        // Logic phân quyền sửa phiếu:
-        // Admin: Toàn quyền sửa bất kỳ phiếu ngày nào.
-        // Site User: Chỉ được sửa các phiếu trong ngày hôm nay; qua ngày thì khóa sổ!
         const ticketDate = (t.time_in || '').split(' ')[0];
         const isTicketToday = ticketDate === getTodayDateStr();
         const isAdmin = AppState.currentUser && AppState.currentUser.role === 'ADMIN';
@@ -1111,8 +1255,8 @@ async function loadDailyReport() {
             <td class="px-3 py-2.5 text-center font-bold text-blue-700">${escapeHtml(t.unit || 'm³')}</td>
             <td class="px-3 py-2.5 text-center font-mono text-slate-600">${formatShortTime(t.time_in)}</td>
             <td class="px-3 py-2.5 text-center font-mono text-slate-600">${formatShortTime(t.time_out)}</td>
-            <td class="px-3 py-2.5 text-right font-mono text-slate-600">${t.standard_volume.toFixed(2)}</td>
-            <td class="px-3 py-2.5 text-right font-mono font-bold text-emerald-700">${t.actual_volume.toFixed(2)}</td>
+            <td class="px-3 py-2.5 text-right font-mono text-slate-600">${Number(t.standard_volume).toFixed(2)}</td>
+            <td class="px-3 py-2.5 text-right font-mono font-bold text-emerald-700">${Number(t.actual_volume).toFixed(2)}</td>
             <td class="px-3 py-2.5 text-xs">${adjustBadge}</td>
             <td class="px-3 py-2.5 text-center">${statusBadge}</td>
             <td class="px-3 py-2.5 text-center no-print whitespace-nowrap">
@@ -1134,28 +1278,43 @@ function openEditTicketModalById(id) {
   const ticket = AppState.dailyTickets.find(t => t.id === id);
   if (!ticket) return;
 
-  document.getElementById('edit_ticket_id').value = ticket.id;
-  document.getElementById('edit_code_label').textContent = ticket.ticket_code;
-  document.getElementById('edit_time_label').textContent = `${ticket.time_in} (Dự án: ${ticket.project_name || '-'})`;
-  document.getElementById('edit_plate').value = ticket.plate_number;
-  document.getElementById('edit_actual_volume').value = ticket.actual_volume;
-  document.getElementById('edit_adjust_reason').value = ticket.adjustment_reason || '';
-  document.getElementById('edit_notes').value = ticket.notes || '';
+  const idIn = document.getElementById('edit_ticket_id');
+  if (idIn) idIn.value = ticket.id;
 
-  document.getElementById('editTicketModal').classList.remove('hidden');
+  const codeLabel = document.getElementById('edit_code_label');
+  if (codeLabel) codeLabel.textContent = ticket.ticket_code;
+
+  const timeLabel = document.getElementById('edit_time_label');
+  if (timeLabel) timeLabel.textContent = `${ticket.time_in} (Dự án: ${ticket.project_name || '-'})`;
+
+  const plateIn = document.getElementById('edit_plate');
+  if (plateIn) plateIn.value = ticket.plate_number;
+
+  const volIn = document.getElementById('edit_actual_volume');
+  if (volIn) volIn.value = ticket.actual_volume;
+
+  const reasonIn = document.getElementById('edit_adjust_reason');
+  if (reasonIn) reasonIn.value = ticket.adjustment_reason || '';
+
+  const notesIn = document.getElementById('edit_notes');
+  if (notesIn) notesIn.value = ticket.notes || '';
+
+  const modal = document.getElementById('editTicketModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeEditTicketModal() {
-  document.getElementById('editTicketModal').classList.add('hidden');
+  const modal = document.getElementById('editTicketModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 async function saveEditTicket(e) {
-  e.preventDefault();
-  const id = document.getElementById('edit_ticket_id').value;
-  const plate_number = document.getElementById('edit_plate').value.trim().toUpperCase();
-  const actual_volume = parseFloat(document.getElementById('edit_actual_volume').value);
-  const adjustment_reason = document.getElementById('edit_adjust_reason').value.trim();
-  const notes = document.getElementById('edit_notes').value.trim();
+  if (e && e.preventDefault) e.preventDefault();
+  const id = document.getElementById('edit_ticket_id')?.value;
+  const plate_number = (document.getElementById('edit_plate')?.value || '').trim().toUpperCase();
+  const actual_volume = parseFloat(document.getElementById('edit_actual_volume')?.value);
+  const adjustment_reason = (document.getElementById('edit_adjust_reason')?.value || '').trim();
+  const notes = (document.getElementById('edit_notes')?.value || '').trim();
 
   if (!plate_number) {
     showToast('Biển số xe không được để trống', 'error');
@@ -1219,12 +1378,12 @@ function handleCumulativeFilterChange() {
 }
 
 async function loadCumulativeReport() {
-  const startDate = document.getElementById('cumStartDate').value || getTodayDateStr();
-  const endDate = document.getElementById('cumEndDate').value || getTodayDateStr();
+  const startDate = document.getElementById('cumStartDate')?.value || getTodayDateStr();
+  const endDate = document.getElementById('cumEndDate')?.value || getTodayDateStr();
   const projSel = document.getElementById('cumProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
-  const supplierId = document.getElementById('cumSupplierFilter').value;
-  const materialId = document.getElementById('cumMaterialFilter').value;
+  const supplierId = document.getElementById('cumSupplierFilter')?.value || '';
+  const materialId = document.getElementById('cumMaterialFilter')?.value || '';
 
   let url = `/api/reports/cumulative?startDate=${startDate}&endDate=${endDate}`;
   if (projectId) url += `&projectId=${projectId}`;
@@ -1237,10 +1396,17 @@ async function loadCumulativeReport() {
 
     const summary = data.summary || {};
 
-    document.getElementById('cumTotalTrips').textContent = summary.cumulative_trips || 0;
-    document.getElementById('cumProjectCount').textContent = summary.project_count || 0;
-    document.getElementById('cumSupplierCount').textContent = summary.supplier_count || 0;
-    document.getElementById('cumActiveDays').textContent = summary.active_days || 0;
+    const elTrips = document.getElementById('cumTotalTrips');
+    if (elTrips) elTrips.textContent = summary.cumulative_trips || 0;
+
+    const elProj = document.getElementById('cumProjectCount');
+    if (elProj) elProj.textContent = summary.project_count || 0;
+
+    const elSupp = document.getElementById('cumSupplierCount');
+    if (elSupp) elSupp.textContent = summary.supplier_count || 0;
+
+    const elDays = document.getElementById('cumActiveDays');
+    if (elDays) elDays.textContent = summary.active_days || 0;
 
     // Bảng 1: Lũy kế theo Loại Vật Liệu & ĐVT
     const matTbody = document.getElementById('cumMaterialTableBody');
@@ -1255,7 +1421,7 @@ async function loadCumulativeReport() {
             <td class="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/50">${escapeHtml(m.unit || 'm³')}</td>
             <td class="px-4 py-3 text-center font-mono font-semibold">${m.trips}</td>
             <td class="px-4 py-3 text-center font-mono">${m.vehicle_count || 0}</td>
-            <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700 text-sm">${m.volume.toFixed(2)} ${m.unit || 'm³'}</td>
+            <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700 text-sm">${Number(m.volume).toFixed(2)} ${m.unit || 'm³'}</td>
           </tr>
         `).join('');
       }
@@ -1292,7 +1458,7 @@ async function loadCumulativeReport() {
             <td class="px-4 py-3 text-slate-800">${escapeHtml(s.material_name)}</td>
             <td class="px-4 py-3 text-center font-bold text-blue-700">${escapeHtml(s.unit || 'm³')}</td>
             <td class="px-4 py-3 text-center font-mono font-semibold">${s.trips}</td>
-            <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${s.volume.toFixed(2)} ${s.unit || 'm³'}</td>
+            <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${Number(s.volume).toFixed(2)} ${s.unit || 'm³'}</td>
           </tr>
         `).join('');
       }
@@ -1305,8 +1471,8 @@ async function loadCumulativeReport() {
 }
 
 function exportCumulativeExcel() {
-  const startDate = document.getElementById('cumStartDate').value || getTodayDateStr();
-  const endDate = document.getElementById('cumEndDate').value || getTodayDateStr();
+  const startDate = document.getElementById('cumStartDate')?.value || getTodayDateStr();
+  const endDate = document.getElementById('cumEndDate')?.value || getTodayDateStr();
   const projSel = document.getElementById('cumProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
 
@@ -1333,38 +1499,59 @@ async function fetchAndShowTicket(ticketId) {
 }
 
 function showTicketModal(ticket) {
-  document.getElementById('prtTicketCode').textContent = ticket.ticket_code;
-  document.getElementById('prtProjectName').textContent = ticket.project_name || 'DỰ ÁN CÔNG TRÌNH';
-  document.getElementById('prtPlate').textContent = ticket.plate_number;
-  document.getElementById('prtSupplier').textContent = ticket.supplier_name;
-  document.getElementById('prtMaterial').textContent = ticket.material_name;
+  const codeEl = document.getElementById('prtTicketCode');
+  if (codeEl) codeEl.textContent = ticket.ticket_code;
+
+  const projEl = document.getElementById('prtProjectName');
+  if (projEl) projEl.textContent = ticket.project_name || 'DỰ ÁN CÔNG TRÌNH';
+
+  const plateEl = document.getElementById('prtPlate');
+  if (plateEl) plateEl.textContent = ticket.plate_number;
+
+  const suppEl = document.getElementById('prtSupplier');
+  if (suppEl) suppEl.textContent = ticket.supplier_name;
+
+  const matEl = document.getElementById('prtMaterial');
+  if (matEl) matEl.textContent = ticket.material_name;
 
   const dim = (ticket.length > 0 && ticket.width > 0 && ticket.height > 0)
     ? `${ticket.length} x ${ticket.width} x ${ticket.height} m`
     : 'Theo quy chuẩn xe';
-  document.getElementById('prtDimensions').textContent = dim;
+  const dimEl = document.getElementById('prtDimensions');
+  if (dimEl) dimEl.textContent = dim;
 
   const unit = ticket.unit || 'm³';
-  document.getElementById('prtStdVolume').textContent = `${ticket.standard_volume.toFixed(2)} ${unit}`;
-  document.getElementById('prtActualVolume').textContent = `${ticket.actual_volume.toFixed(2)} ${unit}`;
+  const stdEl = document.getElementById('prtStdVolume');
+  if (stdEl) stdEl.textContent = `${Number(ticket.standard_volume).toFixed(2)} ${unit}`;
+
+  const actEl = document.getElementById('prtActualVolume');
+  if (actEl) actEl.textContent = `${Number(ticket.actual_volume).toFixed(2)} ${unit}`;
 
   const adjRow = document.getElementById('prtAdjustRow');
+  const adjReason = document.getElementById('prtAdjustReason');
   if (ticket.is_manual_adjusted) {
-    adjRow.classList.remove('hidden');
-    document.getElementById('prtAdjustReason').textContent = ticket.adjustment_reason || 'Điều chỉnh thủ công';
+    if (adjRow) adjRow.classList.remove('hidden');
+    if (adjReason) adjReason.textContent = ticket.adjustment_reason || 'Điều chỉnh thủ công';
   } else {
-    adjRow.classList.add('hidden');
+    if (adjRow) adjRow.classList.add('hidden');
   }
 
-  document.getElementById('prtTimeIn').textContent = ticket.time_in;
-  document.getElementById('prtTimeOut').textContent = ticket.time_out || '(Đang dỡ hàng tại bãi)';
-  document.getElementById('prtNotes').textContent = ticket.notes || 'Không';
+  const inEl = document.getElementById('prtTimeIn');
+  if (inEl) inEl.textContent = ticket.time_in;
 
-  document.getElementById('ticketModal').classList.remove('hidden');
+  const outEl = document.getElementById('prtTimeOut');
+  if (outEl) outEl.textContent = ticket.time_out || '(Đang dỡ hàng tại bãi)';
+
+  const notesEl = document.getElementById('prtNotes');
+  if (notesEl) notesEl.textContent = ticket.notes || 'Không';
+
+  const modal = document.getElementById('ticketModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeTicketModal() {
-  document.getElementById('ticketModal').classList.add('hidden');
+  const modal = document.getElementById('ticketModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 // ============================================================================
@@ -1440,31 +1627,48 @@ function renderSettingsUsers() {
 }
 
 function openUserModal() {
-  document.getElementById('userForm').reset();
-  document.getElementById('usr_id').value = '';
-  document.getElementById('usr_username').disabled = false;
-  document.getElementById('usrModalTitle').textContent = 'Cấp Tài Khoản Người Dùng Mới';
-  document.getElementById('usrPwdRequired').classList.remove('hidden');
-  document.getElementById('usrPwdHint').classList.add('hidden');
-  document.getElementById('usr_password').setAttribute('required', 'required');
+  const form = document.getElementById('userForm');
+  if (form) form.reset();
+
+  const idIn = document.getElementById('usr_id');
+  if (idIn) idIn.value = '';
+
+  const uIn = document.getElementById('usr_username');
+  if (uIn) uIn.disabled = false;
+
+  const titleEl = document.getElementById('userModalTitle') || document.getElementById('usrModalTitle');
+  if (titleEl) titleEl.textContent = 'Cấp Tài Khoản Người Dùng Mới';
+
+  const reqSpan = document.getElementById('usrPwdRequired');
+  if (reqSpan) reqSpan.classList.remove('hidden');
+
+  const hintP = document.getElementById('usrPwdHint');
+  if (hintP) hintP.classList.add('hidden');
+
+  const pwdIn = document.getElementById('usr_password');
+  if (pwdIn) pwdIn.setAttribute('required', 'required');
+
   handleUserRoleChange();
-  document.getElementById('userModal').classList.remove('hidden');
+
+  const modal = document.getElementById('userModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeUserModal() {
-  document.getElementById('userModal').classList.add('hidden');
+  const modal = document.getElementById('userModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 function handleUserRoleChange() {
-  const role = document.getElementById('usr_role').value;
+  const role = document.getElementById('usr_role')?.value || 'SITE_USER';
   const wrapper = document.getElementById('usrProjectWrapper');
   const projSelect = document.getElementById('usr_project');
   if (role === 'ADMIN') {
-    wrapper.classList.add('hidden');
-    projSelect.removeAttribute('required');
+    if (wrapper) wrapper.classList.add('hidden');
+    if (projSelect) projSelect.removeAttribute('required');
   } else {
-    wrapper.classList.remove('hidden');
-    projSelect.setAttribute('required', 'required');
+    if (wrapper) wrapper.classList.remove('hidden');
+    if (projSelect) projSelect.setAttribute('required', 'required');
   }
 }
 
@@ -1472,34 +1676,57 @@ function editUser(id) {
   const u = AppState.users.find(item => item.id === id);
   if (!u) return;
 
-  document.getElementById('usr_id').value = u.id;
-  document.getElementById('usr_username').value = u.username;
-  document.getElementById('usr_username').disabled = true;
-  document.getElementById('usr_password').value = '';
-  document.getElementById('usr_password').removeAttribute('required');
-  document.getElementById('usrPwdRequired').classList.add('hidden');
-  document.getElementById('usrPwdHint').classList.remove('hidden');
+  const idIn = document.getElementById('usr_id');
+  if (idIn) idIn.value = u.id;
 
-  document.getElementById('usr_fullname').value = u.full_name;
-  document.getElementById('usr_role').value = u.role;
-  document.getElementById('usr_status').value = u.status;
-  document.getElementById('usr_project').value = u.project_id || '';
+  const uIn = document.getElementById('usr_username');
+  if (uIn) {
+    uIn.value = u.username;
+    uIn.disabled = true;
+  }
+
+  const pwdIn = document.getElementById('usr_password');
+  if (pwdIn) {
+    pwdIn.value = '';
+    pwdIn.removeAttribute('required');
+  }
+
+  const reqSpan = document.getElementById('usrPwdRequired');
+  if (reqSpan) reqSpan.classList.add('hidden');
+
+  const hintP = document.getElementById('usrPwdHint');
+  if (hintP) hintP.classList.remove('hidden');
+
+  const nameIn = document.getElementById('usr_fullname');
+  if (nameIn) nameIn.value = u.full_name;
+
+  const roleIn = document.getElementById('usr_role');
+  if (roleIn) roleIn.value = u.role;
+
+  const statIn = document.getElementById('usr_status');
+  if (statIn) statIn.value = u.status;
+
+  const projIn = document.getElementById('usr_project');
+  if (projIn) projIn.value = u.project_id || '';
 
   handleUserRoleChange();
 
-  document.getElementById('usrModalTitle').textContent = `Chỉnh Sửa Tài Khoản: ${u.username}`;
-  document.getElementById('userModal').classList.remove('hidden');
+  const titleEl = document.getElementById('userModalTitle') || document.getElementById('usrModalTitle');
+  if (titleEl) titleEl.textContent = `Chỉnh Sửa Tài Khoản: ${u.username}`;
+
+  const modal = document.getElementById('userModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 async function saveUser(event) {
-  event.preventDefault();
-  const id = document.getElementById('usr_id').value;
-  const username = document.getElementById('usr_username').value.trim().toLowerCase();
-  const password = document.getElementById('usr_password').value;
-  const full_name = document.getElementById('usr_fullname').value.trim();
-  const role = document.getElementById('usr_role').value;
-  const status = document.getElementById('usr_status').value;
-  const project_id = document.getElementById('usr_project').value;
+  if (event && event.preventDefault) event.preventDefault();
+  const id = document.getElementById('usr_id')?.value;
+  const username = (document.getElementById('usr_username')?.value || '').trim().toLowerCase();
+  const password = document.getElementById('usr_password')?.value || '';
+  const full_name = (document.getElementById('usr_fullname')?.value || '').trim();
+  const role = document.getElementById('usr_role')?.value || 'SITE_USER';
+  const status = document.getElementById('usr_status')?.value || 'ACTIVE';
+  const project_id = document.getElementById('usr_project')?.value || '';
 
   if (role === 'SITE_USER' && !project_id) {
     showToast('Vui lòng chọn Dự án phân công cho tài khoản công trường', 'error');
@@ -1586,39 +1813,52 @@ function renderSettingsProjects() {
 }
 
 function openProjectModal() {
-  document.getElementById('projectForm').reset();
-  document.getElementById('proj_id').value = '';
-  document.getElementById('projectModalTitle').textContent = 'Thêm Dự Án / Công Trường Mới';
-  document.getElementById('projectModal').classList.remove('hidden');
+  const form = document.getElementById('projectForm');
+  if (form) form.reset();
+  const idIn = document.getElementById('proj_id');
+  if (idIn) idIn.value = '';
+  const title = document.getElementById('projectModalTitle');
+  if (title) title.textContent = 'Thêm Dự Án / Công Trường Mới';
+  const modal = document.getElementById('projectModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeProjectModal() {
-  document.getElementById('projectModal').classList.add('hidden');
+  const modal = document.getElementById('projectModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 function editProject(id) {
   const p = AppState.projects.find(item => item.id === id);
   if (!p) return;
 
-  document.getElementById('proj_id').value = p.id;
-  document.getElementById('proj_name').value = p.name;
-  document.getElementById('proj_code').value = p.code;
-  document.getElementById('proj_location').value = p.location || '';
-  document.getElementById('proj_status').value = p.status || 'ACTIVE';
-  document.getElementById('proj_notes').value = p.notes || '';
+  const idIn = document.getElementById('proj_id');
+  if (idIn) idIn.value = p.id;
+  const nameIn = document.getElementById('proj_name');
+  if (nameIn) nameIn.value = p.name;
+  const codeIn = document.getElementById('proj_code');
+  if (codeIn) codeIn.value = p.code;
+  const locIn = document.getElementById('proj_location');
+  if (locIn) locIn.value = p.location || '';
+  const statIn = document.getElementById('proj_status');
+  if (statIn) statIn.value = p.status || 'ACTIVE';
+  const notesIn = document.getElementById('proj_notes');
+  if (notesIn) notesIn.value = p.notes || '';
 
-  document.getElementById('projectModalTitle').textContent = `Chỉnh Sửa Dự Án: ${p.name}`;
-  document.getElementById('projectModal').classList.remove('hidden');
+  const title = document.getElementById('projectModalTitle');
+  if (title) title.textContent = `Chỉnh Sửa Dự Án: ${p.name}`;
+  const modal = document.getElementById('projectModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 async function saveProject(event) {
-  event.preventDefault();
-  const id = document.getElementById('proj_id').value;
-  const name = document.getElementById('proj_name').value.trim();
-  const code = document.getElementById('proj_code').value.trim();
-  const location = document.getElementById('proj_location').value.trim();
-  const status = document.getElementById('proj_status').value;
-  const notes = document.getElementById('proj_notes').value.trim();
+  if (event && event.preventDefault) event.preventDefault();
+  const id = document.getElementById('proj_id')?.value;
+  const name = (document.getElementById('proj_name')?.value || '').trim();
+  const code = (document.getElementById('proj_code')?.value || '').trim();
+  const location = (document.getElementById('proj_location')?.value || '').trim();
+  const status = document.getElementById('proj_status')?.value || 'ACTIVE';
+  const notes = (document.getElementById('proj_notes')?.value || '').trim();
 
   const payload = { name, code, location, status, notes };
 
@@ -1667,7 +1907,7 @@ function renderSettingsVehicles() {
   if (!tbody) return;
 
   if (AppState.vehicles.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" class="text-center py-6 text-slate-400">Chưa có xe nào trong danh mục</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-slate-400">Chưa có xe nào trong danh mục</td></tr>`;
     return;
   }
 
@@ -1682,10 +1922,9 @@ function renderSettingsVehicles() {
         <td class="px-4 py-3 text-slate-600">${escapeHtml(v.model_type || '')}</td>
         <td class="px-4 py-3 font-semibold text-slate-800">${escapeHtml(v.supplier_name || 'Chưa gán')}</td>
         <td class="px-4 py-3 text-center font-mono text-slate-600">${dim}</td>
-        <td class="px-4 py-3 text-right font-mono font-bold text-blue-700 text-sm">${v.standard_volume.toFixed(2)}</td>
+        <td class="px-4 py-3 text-right font-mono font-bold text-blue-700 text-sm">${Number(v.standard_volume).toFixed(2)}</td>
         <td class="px-4 py-3 text-center font-bold text-blue-800">${v.unit || 'm³'}</td>
         <td class="px-4 py-3 text-slate-600">${escapeHtml(v.default_material_name || '-')}</td>
-        <td class="px-4 py-3 text-slate-400 text-xs">${escapeHtml(v.notes || '')}</td>
         <td class="px-4 py-3 text-center space-x-2">
           <button onclick="editVehicle(${v.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
           <button onclick="deleteVehicle(${v.id}, '${v.plate_number}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
@@ -1696,36 +1935,44 @@ function renderSettingsVehicles() {
 }
 
 function openVehicleModal() {
-  document.getElementById('vehicleForm').reset();
-  document.getElementById('veh_id').value = '';
-  document.getElementById('vehicleModalTitle').textContent = 'Thêm Xe Vận Chuyển Mới';
-  document.getElementById('vehGeoVol').textContent = 'Thể tích: 0.00 m³';
-  document.getElementById('vehicleModal').classList.remove('hidden');
+  const form = document.getElementById('vehicleForm');
+  if (form) form.reset();
+  const idIn = document.getElementById('veh_id');
+  if (idIn) idIn.value = '';
+  const title = document.getElementById('vehicleModalTitle');
+  if (title) title.textContent = 'Thêm Xe Vận Chuyển Mới';
+  const geo = document.getElementById('vehGeoVol');
+  if (geo) geo.textContent = 'Thể tích: 0.00 m³';
+  const modal = document.getElementById('vehicleModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeVehicleModal() {
-  document.getElementById('vehicleModal').classList.add('hidden');
+  const modal = document.getElementById('vehicleModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 function calcVehGeoVol() {
-  const l = parseFloat(document.getElementById('veh_length').value) || 0;
-  const w = parseFloat(document.getElementById('veh_width').value) || 0;
-  const h = parseFloat(document.getElementById('veh_height').value) || 0;
+  const l = parseFloat(document.getElementById('veh_length')?.value) || 0;
+  const w = parseFloat(document.getElementById('veh_width')?.value) || 0;
+  const h = parseFloat(document.getElementById('veh_height')?.value) || 0;
   const vol = l * w * h;
-  document.getElementById('vehGeoVol').textContent = `Thể tích: ${vol.toFixed(2)} m³`;
+  const geo = document.getElementById('vehGeoVol');
+  if (geo) geo.textContent = `Thể tích: ${vol.toFixed(2)} m³`;
 
   const stdIn = document.getElementById('veh_std_volume');
-  const unit = document.getElementById('veh_unit').value;
+  const unit = document.getElementById('veh_unit')?.value || 'm³';
   if (stdIn && !stdIn.value && vol > 0 && unit === 'm³') {
     stdIn.value = vol.toFixed(2);
   }
 }
 
 function handleVehMaterialChange() {
-  const matId = document.getElementById('veh_material').value;
+  const matId = document.getElementById('veh_material')?.value;
   const mat = AppState.materials.find(m => m.id == matId);
   if (mat && mat.unit) {
-    document.getElementById('veh_unit').value = mat.unit;
+    const unitIn = document.getElementById('veh_unit');
+    if (unitIn) unitIn.value = mat.unit;
   }
 }
 
@@ -1733,38 +1980,52 @@ function editVehicle(id) {
   const v = AppState.vehicles.find(item => item.id === id);
   if (!v) return;
 
-  document.getElementById('veh_id').value = v.id;
-  document.getElementById('veh_plate').value = v.plate_number;
-  document.getElementById('veh_model').value = v.model_type || '';
-  document.getElementById('veh_supplier').value = v.supplier_id || '';
-  document.getElementById('veh_project').value = v.project_id || '';
-  document.getElementById('veh_length').value = v.length || '';
-  document.getElementById('veh_width').value = v.width || '';
-  document.getElementById('veh_height').value = v.height || '';
-  document.getElementById('veh_std_volume').value = v.standard_volume || '';
-  document.getElementById('veh_unit').value = v.unit || 'm³';
-  document.getElementById('veh_material').value = v.default_material_id || '';
-  document.getElementById('veh_notes').value = v.notes || '';
+  const idIn = document.getElementById('veh_id');
+  if (idIn) idIn.value = v.id;
+  const plateIn = document.getElementById('veh_plate');
+  if (plateIn) plateIn.value = v.plate_number;
+  const modelIn = document.getElementById('veh_model');
+  if (modelIn) modelIn.value = v.model_type || '';
+  const suppIn = document.getElementById('veh_supplier');
+  if (suppIn) suppIn.value = v.supplier_id || '';
+  const projIn = document.getElementById('veh_project');
+  if (projIn) projIn.value = v.project_id || '';
+  const lIn = document.getElementById('veh_length');
+  if (lIn) lIn.value = v.length || '';
+  const wIn = document.getElementById('veh_width');
+  if (wIn) wIn.value = v.width || '';
+  const hIn = document.getElementById('veh_height');
+  if (hIn) hIn.value = v.height || '';
+  const stdIn = document.getElementById('veh_std_volume');
+  if (stdIn) stdIn.value = v.standard_volume || '';
+  const unitIn = document.getElementById('veh_unit');
+  if (unitIn) unitIn.value = v.unit || 'm³';
+  const matIn = document.getElementById('veh_material');
+  if (matIn) matIn.value = v.default_material_id || '';
+  const notesIn = document.getElementById('veh_notes');
+  if (notesIn) notesIn.value = v.notes || '';
 
   calcVehGeoVol();
-  document.getElementById('vehicleModalTitle').textContent = `Chỉnh Sửa Xe ${v.plate_number}`;
-  document.getElementById('vehicleModal').classList.remove('hidden');
+  const title = document.getElementById('vehicleModalTitle');
+  if (title) title.textContent = `Chỉnh Sửa Xe ${v.plate_number}`;
+  const modal = document.getElementById('vehicleModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 async function saveVehicle(event) {
-  event.preventDefault();
-  const id = document.getElementById('veh_id').value;
-  const plate = document.getElementById('veh_plate').value.trim().toUpperCase();
-  const model = document.getElementById('veh_model').value.trim();
-  const supplierId = document.getElementById('veh_supplier').value;
-  const projectId = document.getElementById('veh_project').value;
-  const length = parseFloat(document.getElementById('veh_length').value) || 0;
-  const width = parseFloat(document.getElementById('veh_width').value) || 0;
-  const height = parseFloat(document.getElementById('veh_height').value) || 0;
-  const stdVolume = parseFloat(document.getElementById('veh_std_volume').value) || 0;
-  const unit = document.getElementById('veh_unit').value;
-  const materialId = document.getElementById('veh_material').value;
-  const notes = document.getElementById('veh_notes').value.trim();
+  if (event && event.preventDefault) event.preventDefault();
+  const id = document.getElementById('veh_id')?.value;
+  const plate = (document.getElementById('veh_plate')?.value || '').trim().toUpperCase();
+  const model = (document.getElementById('veh_model')?.value || '').trim();
+  const supplierId = document.getElementById('veh_supplier')?.value;
+  const projectId = document.getElementById('veh_project')?.value;
+  const length = parseFloat(document.getElementById('veh_length')?.value) || 0;
+  const width = parseFloat(document.getElementById('veh_width')?.value) || 0;
+  const height = parseFloat(document.getElementById('veh_height')?.value) || 0;
+  const stdVolume = parseFloat(document.getElementById('veh_std_volume')?.value) || 0;
+  const unit = document.getElementById('veh_unit')?.value || 'm³';
+  const materialId = document.getElementById('veh_material')?.value;
+  const notes = (document.getElementById('veh_notes')?.value || '').trim();
 
   const payload = {
     plate_number: plate,
@@ -1823,7 +2084,7 @@ function renderSettingsMaterials() {
   if (!tbody) return;
 
   if (AppState.materials.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-slate-400">Chưa có loại vật liệu nào</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-400">Chưa có loại vật liệu nào</td></tr>`;
     return;
   }
 
@@ -1836,8 +2097,8 @@ function renderSettingsMaterials() {
           ${escapeHtml(m.unit || 'm³')}
         </span>
       </td>
-      <td class="px-4 py-3 text-slate-600">${escapeHtml(m.category || 'Vật liệu')}</td>
-      <td class="px-4 py-3 text-slate-400 text-xs">${escapeHtml(m.notes || '')}</td>
+      <td class="px-4 py-3 text-center font-mono font-semibold">${m.total_trips || 0}</td>
+      <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${Number(m.cumulative_volume || 0).toFixed(2)}</td>
       <td class="px-4 py-3 text-center space-x-2">
         <button onclick="editMaterial(${m.id})" class="text-blue-600 hover:underline font-semibold">Sửa</button>
         <button onclick="deleteMaterial(${m.id}, '${escapeHtml(m.name)}')" class="text-red-600 hover:underline font-semibold">Xóa</button>
@@ -1847,41 +2108,51 @@ function renderSettingsMaterials() {
 }
 
 function openMaterialModal() {
-  document.getElementById('materialForm').reset();
-  document.getElementById('mat_id').value = '';
-  document.getElementById('materialModalTitle').textContent = 'Thêm Loại Vật Liệu Mới';
-  document.getElementById('materialModal').classList.remove('hidden');
+  const form = document.getElementById('materialForm');
+  if (form) form.reset();
+  const idIn = document.getElementById('mat_id');
+  if (idIn) idIn.value = '';
+  const title = document.getElementById('materialModalTitle');
+  if (title) title.textContent = 'Thêm Loại Vật Liệu Mới';
+  const modal = document.getElementById('materialModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeMaterialModal() {
-  document.getElementById('materialModal').classList.add('hidden');
+  const modal = document.getElementById('materialModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 function editMaterial(id) {
   const m = AppState.materials.find(item => item.id === id);
   if (!m) return;
 
-  document.getElementById('mat_id').value = m.id;
-  document.getElementById('mat_name').value = m.name;
-  document.getElementById('mat_code').value = m.code;
-  document.getElementById('mat_unit').value = m.unit || 'm³';
-  document.getElementById('mat_category').value = m.category || '';
-  document.getElementById('mat_notes').value = m.notes || '';
+  const idIn = document.getElementById('mat_id');
+  if (idIn) idIn.value = m.id;
+  const nameIn = document.getElementById('mat_name');
+  if (nameIn) nameIn.value = m.name;
+  const codeIn = document.getElementById('mat_code');
+  if (codeIn) codeIn.value = m.code;
+  const unitIn = document.getElementById('mat_unit');
+  if (unitIn) unitIn.value = m.unit || 'm³';
+  const descIn = document.getElementById('mat_desc');
+  if (descIn) descIn.value = m.description || '';
 
-  document.getElementById('materialModalTitle').textContent = `Chỉnh Sửa Vật Liệu: ${m.name}`;
-  document.getElementById('materialModal').classList.remove('hidden');
+  const title = document.getElementById('materialModalTitle');
+  if (title) title.textContent = `Chỉnh Sửa Vật Liệu: ${m.name}`;
+  const modal = document.getElementById('materialModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 async function saveMaterial(event) {
-  event.preventDefault();
-  const id = document.getElementById('mat_id').value;
-  const name = document.getElementById('mat_name').value.trim();
-  const code = document.getElementById('mat_code').value.trim();
-  const unit = document.getElementById('mat_unit').value.trim();
-  const category = document.getElementById('mat_category').value.trim();
-  const notes = document.getElementById('mat_notes').value.trim();
+  if (event && event.preventDefault) event.preventDefault();
+  const id = document.getElementById('mat_id')?.value;
+  const name = (document.getElementById('mat_name')?.value || '').trim();
+  const code = (document.getElementById('mat_code')?.value || '').trim();
+  const unit = (document.getElementById('mat_unit')?.value || 'm³').trim();
+  const description = (document.getElementById('mat_desc')?.value || '').trim();
 
-  const payload = { name, code, unit, category, notes };
+  const payload = { name, code, unit, description };
 
   try {
     const url = id ? `/api/materials/${id}` : '/api/materials';
@@ -1949,39 +2220,52 @@ function renderSettingsSuppliers() {
 }
 
 function openSupplierModal() {
-  document.getElementById('supplierForm').reset();
-  document.getElementById('supp_id').value = '';
-  document.getElementById('supplierModalTitle').textContent = 'Thêm Nhà Cung Cấp Mới';
-  document.getElementById('supplierModal').classList.remove('hidden');
+  const form = document.getElementById('supplierForm');
+  if (form) form.reset();
+  const idIn = document.getElementById('supp_id');
+  if (idIn) idIn.value = '';
+  const title = document.getElementById('supplierModalTitle');
+  if (title) title.textContent = 'Thêm Nhà Cung Cấp Mới';
+  const modal = document.getElementById('supplierModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 function closeSupplierModal() {
-  document.getElementById('supplierModal').classList.add('hidden');
+  const modal = document.getElementById('supplierModal');
+  if (modal) modal.classList.add('hidden');
 }
 
 function editSupplier(id) {
   const s = AppState.suppliers.find(item => item.id === id);
   if (!s) return;
 
-  document.getElementById('supp_id').value = s.id;
-  document.getElementById('supp_name').value = s.name;
-  document.getElementById('supp_code').value = s.code;
-  document.getElementById('supp_phone').value = s.phone || '';
-  document.getElementById('supp_contact').value = s.contact_person || '';
-  document.getElementById('supp_notes').value = s.notes || '';
+  const idIn = document.getElementById('supp_id');
+  if (idIn) idIn.value = s.id;
+  const nameIn = document.getElementById('supp_name');
+  if (nameIn) nameIn.value = s.name;
+  const codeIn = document.getElementById('supp_code');
+  if (codeIn) codeIn.value = s.code;
+  const phoneIn = document.getElementById('supp_phone');
+  if (phoneIn) phoneIn.value = s.phone || '';
+  const contactIn = document.getElementById('supp_contact');
+  if (contactIn) contactIn.value = s.contact_person || '';
+  const notesIn = document.getElementById('supp_notes');
+  if (notesIn) notesIn.value = s.notes || '';
 
-  document.getElementById('supplierModalTitle').textContent = `Chỉnh Sửa Nhà Cung Cấp: ${s.name}`;
-  document.getElementById('supplierModal').classList.remove('hidden');
+  const title = document.getElementById('supplierModalTitle');
+  if (title) title.textContent = `Chỉnh Sửa Nhà Cung Cấp: ${s.name}`;
+  const modal = document.getElementById('supplierModal');
+  if (modal) modal.classList.remove('hidden');
 }
 
 async function saveSupplier(event) {
-  event.preventDefault();
-  const id = document.getElementById('supp_id').value;
-  const name = document.getElementById('supp_name').value.trim();
-  const code = document.getElementById('supp_code').value.trim();
-  const phone = document.getElementById('supp_phone').value.trim();
-  const contact = document.getElementById('supp_contact').value.trim();
-  const notes = document.getElementById('supp_notes').value.trim();
+  if (event && event.preventDefault) event.preventDefault();
+  const id = document.getElementById('supp_id')?.value;
+  const name = (document.getElementById('supp_name')?.value || '').trim();
+  const code = (document.getElementById('supp_code')?.value || '').trim();
+  const phone = (document.getElementById('supp_phone')?.value || '').trim();
+  const contact = (document.getElementById('supp_contact')?.value || '').trim();
+  const notes = (document.getElementById('supp_notes')?.value || '').trim();
 
   const payload = { name, code, phone, contact_person: contact, notes };
 
@@ -2072,3 +2356,63 @@ function formatShortTime(dateTimeStr) {
   const parts = dateTimeStr.split(' ');
   return parts.length > 1 ? parts[1].slice(0, 5) : dateTimeStr;
 }
+
+// Gán toàn cục các hàm gọi từ thuộc tính inline HTML
+window.handleLogin = handleLogin;
+window.quickFillLogin = quickFillLogin;
+window.handleLogout = handleLogout;
+window.switchTab = switchTab;
+window.handleHeaderProjectChange = handleHeaderProjectChange;
+window.handlePlateInput = handlePlateInput;
+window.selectVehicleSuggestion = selectVehicleSuggestion;
+window.handleCheckinMaterialChange = handleCheckinMaterialChange;
+window.onMaterialChange = handleCheckinMaterialChange;
+window.calculateGeoVolume = calculateGeoVolume;
+window.calcGeoVolume = calculateGeoVolume;
+window.syncStdVolumeToActual = syncStdVolumeToActual;
+window.toggleManualAdjustment = toggleManualAdjustment;
+window.handleCheckIn = handleCheckIn;
+window.submitCheckIn = handleCheckIn;
+window.loadInYardTickets = loadInYardTickets;
+window.openCheckOutModal = openCheckOutModal;
+window.closeCheckOutModal = closeCheckOutModal;
+window.submitCheckOut = submitCheckOut;
+window.handleDailyFilterChange = handleDailyFilterChange;
+window.openEditTicketModalById = openEditTicketModalById;
+window.closeEditTicketModal = closeEditTicketModal;
+window.saveEditTicket = saveEditTicket;
+window.printDailyReport = printDailyReport;
+window.exportDailyExcel = exportDailyExcel;
+window.handleCumulativeFilterChange = handleCumulativeFilterChange;
+window.exportCumulativeExcel = exportCumulativeExcel;
+window.fetchAndShowTicket = fetchAndShowTicket;
+window.closeTicketModal = closeTicketModal;
+window.switchSettingsSubTab = switchSettingsSubTab;
+window.openUserModal = openUserModal;
+window.closeUserModal = closeUserModal;
+window.editUser = editUser;
+window.saveUser = saveUser;
+window.deleteUser = deleteUser;
+window.handleUserRoleChange = handleUserRoleChange;
+window.openProjectModal = openProjectModal;
+window.closeProjectModal = closeProjectModal;
+window.editProject = editProject;
+window.saveProject = saveProject;
+window.deleteProject = deleteProject;
+window.openVehicleModal = openVehicleModal;
+window.closeVehicleModal = closeVehicleModal;
+window.calcVehGeoVol = calcVehGeoVol;
+window.handleVehMaterialChange = handleVehMaterialChange;
+window.editVehicle = editVehicle;
+window.saveVehicle = saveVehicle;
+window.deleteVehicle = deleteVehicle;
+window.openMaterialModal = openMaterialModal;
+window.closeMaterialModal = closeMaterialModal;
+window.editMaterial = editMaterial;
+window.saveMaterial = saveMaterial;
+window.deleteMaterial = deleteMaterial;
+window.openSupplierModal = openSupplierModal;
+window.closeSupplierModal = closeSupplierModal;
+window.editSupplier = editSupplier;
+window.saveSupplier = saveSupplier;
+window.deleteSupplier = deleteSupplier;

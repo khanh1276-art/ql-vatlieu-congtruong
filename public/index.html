@@ -8,6 +8,14 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- PWA & Android App Settings -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="style.css">
   <script>
     tailwind.config = {
@@ -185,6 +193,7 @@
           </div>
 
           <form id="checkInForm" onsubmit="handleCheckIn(event)" class="space-y-4">
+            <input type="hidden" id="checkin_unit" value="m³">
             <!-- Dự Án Tiếp Nhận (Tự động gán nếu là tài khoản Công trường) -->
             <div>
               <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
@@ -1444,5 +1453,12 @@
   <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none"></div>
 
   <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration:', err));
+      });
+    }
+  </script>
 </body>
 </html>
