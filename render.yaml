@@ -3,13 +3,8 @@ services:
     name: ql-vatlieu-congtruong
     runtime: node
     plan: free
-    region: singapore # Chọn khu vực gần Việt Nam nhất để tốc độ nhanh
-    buildCommand: npm install
+    region: singapore
     startCommand: node src/server.js
     envVars:
       - key: NODE_VERSION
         value: 22.14.0
-      - key: TURSO_DATABASE_URL
-        sync: false
-      - key: TURSO_AUTH_TOKEN
-        sync: false
