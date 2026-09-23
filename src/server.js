@@ -59,8 +59,8 @@ function parseRequestBody(req) {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk.toString();
-      if (body.length > 5 * 1024 * 1024) {
-        reject(new Error('Payload too large'));
+      if (body.length > 25 * 1024 * 1024) {
+        reject(new Error('Payload too large (Tối đa 25MB)'));
       }
     });
     req.on('end', () => {
@@ -305,16 +305,21 @@ const server = http.createServer(async (req, res) => {
         newPwdHash = hashPassword(body.password.trim());
       }
 
+      const role = body.role ? (body.role === 'ADMIN' ? 'ADMIN' : 'SITE_USER') : user.role;
+      const projectId = role === 'ADMIN' ? null : (body.project_id ? parseInt(body.project_id, 10) : null);
+
       db.prepare(`
         UPDATE users SET
           full_name = COALESCE(?, full_name),
+          role = ?,
           project_id = ?,
           password_hash = ?,
           status = COALESCE(?, status)
         WHERE id = ?
       `).run(
         body.full_name ? body.full_name.trim() : null,
-        body.role === 'ADMIN' ? null : (body.project_id ? parseInt(body.project_id, 10) : user.project_id),
+        role,
+        projectId,
         newPwdHash,
         body.status || null,
         id
@@ -1376,6 +1381,170 @@ const server = http.createServer(async (req, res) => {
     }
 
     // =========================================================================
+    // 8.1 API SAO LƯU & KHÔI PHỤC DỮ LIỆU (BACKUP & RESTORE - ADMIN ONLY)
+    // =========================================================================
+    if (pathname === '/api/backup/info' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ Admin mới có quyền xem thông tin sao lưu' });
+      }
+
+      const dbPath = path.join(__dirname, '..', 'data', 'inventory.db');
+      let dbSize = 0;
+      let lastModified = null;
+      if (fs.existsSync(dbPath)) {
+        const stats = fs.statSync(dbPath);
+        dbSize = stats.size;
+        lastModified = getLocalDateTime(stats.mtime);
+      }
+
+      const totalProjects = db.prepare('SELECT COUNT(*) as count FROM projects').get()?.count || 0;
+      const totalVehicles = db.prepare('SELECT COUNT(*) as count FROM vehicles').get()?.count || 0;
+      const totalMaterials = db.prepare('SELECT COUNT(*) as count FROM materials').get()?.count || 0;
+      const totalSuppliers = db.prepare('SELECT COUNT(*) as count FROM suppliers').get()?.count || 0;
+      const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get()?.count || 0;
+      const totalTickets = db.prepare('SELECT COUNT(*) as count FROM tickets').get()?.count || 0;
+
+      const isRender = process.env.RENDER === 'true';
+
+      const { isCloudConfigured } = require('./cloud_sync.js');
+      const isCloud = isCloudConfigured();
+
+      return sendJson(res, 200, {
+        db_size_bytes: dbSize,
+        db_size_kb: (dbSize / 1024).toFixed(1),
+        last_modified: lastModified,
+        is_render: isRender,
+        cloud_connected: isCloud,
+        counts: {
+          projects: totalProjects,
+          vehicles: totalVehicles,
+          materials: totalMaterials,
+          suppliers: totalSuppliers,
+          users: totalUsers,
+          tickets: totalTickets
+        }
+      });
+    }
+
+    if (pathname === '/api/backup/export' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ Admin mới có quyền xuất bản sao lưu' });
+      }
+
+      const projects = db.prepare('SELECT * FROM projects').all();
+      const suppliers = db.prepare('SELECT * FROM suppliers').all();
+      const materials = db.prepare('SELECT * FROM materials').all();
+      const vehicles = db.prepare('SELECT * FROM vehicles').all();
+      const users = db.prepare('SELECT id, username, password_hash, full_name, role, project_id, status, created_at FROM users').all();
+      const tickets = db.prepare('SELECT * FROM tickets').all();
+
+      const backupData = {
+        app: 'QuanLyVatLieuCongTruong',
+        version: '2.0',
+        exported_at: getLocalDateTime(),
+        data: {
+          projects,
+          suppliers,
+          materials,
+          vehicles,
+          users,
+          tickets
+        }
+      };
+
+      const dateStr = getLocalDateString().replace(/-/g, '');
+      const filename = `Backup_VLXD_${dateStr}_${Date.now().toString().slice(-4)}.json`;
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filename}"`
+      });
+      return res.end(JSON.stringify(backupData, null, 2));
+    }
+
+    if (pathname === '/api/backup/download-db' && method === 'GET') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ Admin mới có quyền tải file database' });
+      }
+
+      try {
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      } catch (e) {
+        console.error('Lỗi checkpoint WAL:', e);
+      }
+
+      const dbPath = path.join(__dirname, '..', 'data', 'inventory.db');
+      if (!fs.existsSync(dbPath)) {
+        return sendJson(res, 404, { error: 'Không tìm thấy file cơ sở dữ liệu' });
+      }
+
+      const dateStr = getLocalDateString().replace(/-/g, '');
+      const filename = `inventory_${dateStr}.db`;
+
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${filename}"`
+      });
+      const stream = fs.createReadStream(dbPath);
+      return stream.pipe(res);
+    }
+
+    if (pathname === '/api/backup/import' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ Admin mới có quyền khôi phục dữ liệu' });
+      }
+
+      const body = await parseRequestBody(req);
+      if (!body || !body.data) {
+        return sendJson(res, 400, { error: 'Dữ liệu sao lưu không đúng định dạng JSON hợp lệ' });
+      }
+
+      const d = body.data;
+      let stats = { projects: 0, suppliers: 0, materials: 0, vehicles: 0, users: 0, tickets: 0 };
+
+      function insertDynamic(table, rows) {
+        if (!Array.isArray(rows) || rows.length === 0) return 0;
+        let count = 0;
+        for (const row of rows) {
+          const keys = Object.keys(row);
+          if (keys.length === 0) continue;
+          const placeholders = keys.map(() => '?').join(', ');
+          const columns = keys.join(', ');
+          const values = keys.map(k => row[k]);
+          const stmt = db.prepare(`INSERT OR REPLACE INTO ${table} (${columns}) VALUES (${placeholders})`);
+          stmt.run(...values);
+          count++;
+        }
+        return count;
+      }
+
+      // Tắt foreign_keys để tránh việc INSERT OR REPLACE users làm CASCADE DELETE phiên sessions đang đăng nhập
+      db.exec('PRAGMA foreign_keys = OFF;');
+      db.exec('BEGIN TRANSACTION;');
+      try {
+        if (Array.isArray(d.projects)) stats.projects = insertDynamic('projects', d.projects);
+        if (Array.isArray(d.suppliers)) stats.suppliers = insertDynamic('suppliers', d.suppliers);
+        if (Array.isArray(d.materials)) stats.materials = insertDynamic('materials', d.materials);
+        if (Array.isArray(d.vehicles)) stats.vehicles = insertDynamic('vehicles', d.vehicles);
+        if (Array.isArray(d.users)) stats.users = insertDynamic('users', d.users);
+        if (Array.isArray(d.tickets)) stats.tickets = insertDynamic('tickets', d.tickets);
+
+        db.exec('COMMIT;');
+        db.exec('PRAGMA foreign_keys = ON;');
+        return sendJson(res, 200, { success: true, message: 'Khôi phục dữ liệu thành công', stats });
+      } catch (err) {
+        db.exec('ROLLBACK;');
+        db.exec('PRAGMA foreign_keys = ON;');
+        console.error('Lỗi khi khôi phục dữ liệu:', err);
+        return sendJson(res, 500, { error: 'Lỗi khôi phục cơ sở dữ liệu: ' + err.message });
+      }
+    }
+
+    // =========================================================================
     // 9. PHỤC VỤ STATIC FILES
     // =========================================================================
     let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
@@ -1665,10 +1834,29 @@ function escapeXml(unsafe) {
     .replace(/'/g, '&apos;');
 }
 
-server.listen(PORT, () => {
-  console.log(`=====================================================`);
-  console.log(` PHẦN MỀM QUẢN LÝ KHO VẬT LIỆU CÔNG TRƯỜNG`);
-  console.log(` Máy chủ đang chạy tại: http://localhost:${PORT}`);
-  console.log(` Mạng nội bộ: http://0.0.0.0:${PORT}`);
-  console.log(`=====================================================`);
+const { initCloudDatabase, isCloudConfigured } = require('./cloud_sync.js');
+
+async function bootstrap() {
+  if (isCloudConfigured()) {
+    console.log('☁️ Phát hiện cấu hình Cloud Database (Turso). Đang đồng bộ dữ liệu...');
+    await initCloudDatabase(db);
+  }
+
+  server.listen(PORT, () => {
+    console.log(`=====================================================`);
+    console.log(` PHẦN MỀM QUẢN LÝ KHO VẬT LIỆU CÔNG TRƯỜNG`);
+    console.log(` Máy chủ đang chạy tại: http://localhost:${PORT}`);
+    console.log(` Mạng nội bộ: http://0.0.0.0:${PORT}`);
+    if (isCloudConfigured()) {
+      console.log(` ☁️ Trạng thái: ĐÃ KẾT NỐI CLOUD DATABASE (TURSO)`);
+      console.log(` Dữ liệu được bảo toàn vĩnh viễn trên đám mây!`);
+    } else {
+      console.log(` 💾 Trạng thái: SQLite Cục bộ (data/inventory.db)`);
+    }
+    console.log(`=====================================================`);
+  });
+}
+
+bootstrap().catch(err => {
+  console.error('Lỗi nghiêm trọng khi khởi động máy chủ:', err);
 });

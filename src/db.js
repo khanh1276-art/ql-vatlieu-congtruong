@@ -20,6 +20,27 @@ db.exec(`
   PRAGMA foreign_keys = ON;
 `);
 
+// Tự động đồng bộ các lệnh ghi (INSERT/UPDATE/DELETE) lên Cloud Database (Turso) nếu được cấu hình
+const originalPrepare = db.prepare.bind(db);
+db.prepare = function(sql) {
+  const stmt = originalPrepare(sql);
+  const trimmed = sql.trim().toUpperCase();
+  const isMutation = trimmed.startsWith('INSERT') || trimmed.startsWith('UPDATE') || trimmed.startsWith('DELETE');
+
+  if (isMutation) {
+    const originalRun = stmt.run.bind(stmt);
+    stmt.run = function(...args) {
+      const result = originalRun(...args);
+      try {
+        const { executeCloudSql } = require('./cloud_sync.js');
+        executeCloudSql(sql, args);
+      } catch (e) {}
+      return result;
+    };
+  }
+  return stmt;
+};
+
 // Hàm băm mật khẩu an toàn bằng SHA256 kèm muối cố định
 function hashPassword(password) {
   const salt = 'vlxd_site_salt_2026';
