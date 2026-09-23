@@ -9,7 +9,15 @@
   "engines": {
     "node": ">=22.5.0"
   },
-  "keywords": ["construction", "materials", "inventory", "management"],
+  "keywords": [
+    "construction",
+    "materials",
+    "inventory",
+    "management"
+  ],
   "author": "Antigravity",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "@libsql/client": "^0.18.0"
+  }
 }
