@@ -185,7 +185,6 @@
           </div>
 
           <form id="checkInForm" onsubmit="handleCheckIn(event)" class="space-y-4">
-            <input type="hidden" id="checkin_unit" value="m³">
             <!-- Dự Án Tiếp Nhận (Tự động gán nếu là tài khoản Công trường) -->
             <div>
               <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
@@ -286,7 +285,10 @@
                 <div class="flex items-center space-x-1.5">
                   <input type="number" step="0.01" min="0.1" required id="checkin_std_volume" oninput="syncStdVolumeToActual()"
                     class="w-24 text-right font-mono font-bold text-lg px-2 py-1 bg-white border-2 border-blue-400 rounded-lg focus:outline-none focus:border-blue-600 text-blue-900">
-                  <span id="checkinStdUnitBadge" class="font-bold text-blue-900 text-sm bg-blue-100 px-2 py-1 rounded">m³</span>
+                  <input type="text" list="commonUnits" id="checkin_unit" value="m³" oninput="handleCheckinUnitInput(this.value)"
+                    title="Đơn vị tính - Bạn có thể nhập tùy chỉnh hoặc chọn từ danh sách"
+                    placeholder="ĐVT"
+                    class="w-20 text-center font-bold text-blue-900 text-sm bg-blue-100 border border-blue-300 rounded-lg px-2 py-1.5 focus:bg-white focus:border-blue-600 focus:outline-none">
                 </div>
               </div>
 
@@ -371,7 +373,7 @@
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
         <div class="flex items-center space-x-2">
           <span class="text-sm font-bold text-slate-800">📊 Phạm Vi Theo Dõi Khối Lượng:</span>
-          <span id="dashProjectBadge" class="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">Toàn bộ 3 dự án</span>
+          <span id="dashProjectBadge" class="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">Tất cả các dự án</span>
         </div>
         <div class="flex items-center space-x-2">
           <label class="text-xs text-slate-500 font-semibold">Lọc theo dự án:</label>
@@ -1348,6 +1350,17 @@
           </div>
         </div>
 
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">Tên / Loại Vật Liệu</label>
+            <input type="text" id="edit_material" placeholder="Tên vật liệu..." class="w-full text-xs font-semibold px-3 py-2 border rounded-lg">
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-blue-900 mb-1">Đơn Vị Tính (ĐVT)</label>
+            <input type="text" list="commonUnits" id="edit_unit" placeholder="m³, Tấn, kg, Bao..." class="w-full text-xs font-bold px-3 py-2 border-2 border-blue-400 rounded-lg text-blue-900">
+          </div>
+        </div>
+
         <div>
           <label class="block text-xs font-semibold text-slate-700 mb-1">Lý do điều chỉnh (nếu có)</label>
           <input type="text" id="edit_adjust_reason" class="w-full text-xs px-3 py-2 border rounded-lg">
@@ -1564,14 +1577,9 @@
               class="w-full text-base font-bold font-mono px-3 py-2 border-2 border-blue-400 rounded-lg text-blue-900">
           </div>
           <div>
-            <label class="block text-xs font-bold text-blue-900 mb-1">Đơn Vị Tính</label>
-            <select id="veh_unit" class="w-full text-sm font-bold px-3 py-2 border-2 border-blue-400 rounded-lg text-blue-900">
-              <option value="m³">m³ (Khối)</option>
-              <option value="Tấn">Tấn</option>
-              <option value="m">m (Mét dài)</option>
-              <option value="kg">kg</option>
-              <option value="Cái">Cái</option>
-            </select>
+            <label class="block text-xs font-bold text-blue-900 mb-1">Đơn Vị Tính (ĐVT)</label>
+            <input type="text" list="commonUnits" id="veh_unit" placeholder="m³, Tấn, kg, Cuộn..."
+              class="w-full text-sm font-bold px-3 py-2 border-2 border-blue-400 rounded-lg text-blue-900">
           </div>
         </div>
 
@@ -1615,15 +1623,20 @@
           </div>
           <div>
             <label class="block text-xs font-bold text-blue-900 mb-1">Đơn Vị Tính (ĐVT) <span class="text-red-500">*</span></label>
-            <input type="text" list="commonUnits" id="mat_unit" required placeholder="Tấn, m, m³..." class="w-full text-xs px-3 py-2 border-2 border-blue-400 rounded-lg font-bold text-blue-900">
+            <input type="text" list="commonUnits" id="mat_unit" required placeholder="Tùy chỉnh: m³, Tấn, Bao, Cuộn..." class="w-full text-xs px-3 py-2 border-2 border-blue-400 rounded-lg font-bold text-blue-900">
             <datalist id="commonUnits">
-              <option value="Tấn">Thép, xi măng rời, kim loại</option>
-              <option value="m">Cống bê tông, cọc ép (Mét dài)</option>
-              <option value="m³">Cát, đá, đất đắp, bê tông thương phẩm (Khối)</option>
-              <option value="kg">Thép buộc, đinh, bu lông, phụ gia</option>
-              <option value="Cái">Cấu kiện đúc sẵn, tấm đan, hố ga</option>
-              <option value="Bao">Xi măng bao, vôi bao</option>
-              <option value="Viên">Gạch xây, ngói lợp</option>
+              <option value="m³">Khối (Cát, đá, đất đắp, bê tông thương phẩm)</option>
+              <option value="Tấn">Tấn (Thép cây, thép cuộn, xi măng rời, kim loại)</option>
+              <option value="kg">kg (Thép buộc, đinh, bu lông, que hàn, phụ gia)</option>
+              <option value="m">Mét dài (Cống bê tông, cọc ép, dây điện, ống nhựa)</option>
+              <option value="m²">Mét vuông (Tấm lợp, ngói, bạt lót, sàn decking)</option>
+              <option value="Cái">Cái / Chiếc (Cấu kiện đúc sẵn, tấm đan, hố ga)</option>
+              <option value="Bao">Bao (Xi măng bao, vôi bột, keo dán gạch)</option>
+              <option value="Viên">Viên (Gạch xây, gạch lát, ngói lợp)</option>
+              <option value="Cuộn">Cuộn (Bạt dứa, lưới b40, màng chống thấm)</option>
+              <option value="Thùng">Thùng / Can / Hộp (Sơn, keo dán, dầu mỡ)</option>
+              <option value="Chuyến">Chuyến / Xe (Vận chuyển trọn gói, bùn đất)</option>
+              <option value="Bộ">Bộ / Cặp (Cửa, phụ kiện lắp ghép)</option>
             </datalist>
           </div>
         </div>
