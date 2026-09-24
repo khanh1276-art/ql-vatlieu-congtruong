@@ -599,19 +599,13 @@ async function loadVehicles() {
 // ============================================================================
 // 8. FORM CHECK-IN: GỢI Ý BIỂN SỐ & TÍNH TOÁN QUY CÁCH
 // ============================================================================
-function handleCheckinUnitInput(val) {
-  const v = (val || 'm³').trim();
-  const actBadge = document.getElementById('checkinActualUnitBadge') || document.getElementById('unitBadgeActual');
-  if (actBadge) actBadge.textContent = v;
-}
-
 function getCheckinUnit() {
-  const unitIn = document.getElementById('checkin_unit');
-  if (unitIn && unitIn.value && unitIn.value.trim()) return unitIn.value.trim();
+  const hiddenUnit = document.getElementById('checkin_unit');
+  if (hiddenUnit && hiddenUnit.value) return hiddenUnit.value;
   const matSel = document.getElementById('checkin_material');
   if (matSel && matSel.selectedIndex >= 0) {
     const opt = matSel.options[matSel.selectedIndex];
-    if (opt && opt.dataset && opt.dataset.unit) return opt.dataset.unit.trim();
+    if (opt && opt.dataset && opt.dataset.unit) return opt.dataset.unit;
   }
   const badge = document.getElementById('checkinStdUnitBadge') || document.getElementById('unitBadgeStd');
   if (badge && badge.textContent) return badge.textContent.trim();
@@ -695,14 +689,11 @@ function selectVehicleSuggestion(plate) {
   if (stdIn) stdIn.value = v.standard_volume || '';
 
   const unit = v.unit || 'm³';
-  const unitIn = document.getElementById('checkin_unit');
-  if (unitIn) unitIn.value = unit;
+  const hiddenUnit = document.getElementById('checkin_unit');
+  if (hiddenUnit) hiddenUnit.value = unit;
 
   const stdBadge = document.getElementById('checkinStdUnitBadge') || document.getElementById('unitBadgeStd');
-  if (stdBadge) {
-    if (stdBadge.tagName === 'INPUT') stdBadge.value = unit;
-    else stdBadge.textContent = unit;
-  }
+  if (stdBadge) stdBadge.textContent = unit;
   const actBadge = document.getElementById('checkinActualUnitBadge') || document.getElementById('unitBadgeActual');
   if (actBadge) actBadge.textContent = unit;
 
@@ -722,14 +713,11 @@ function handleCheckinMaterialChange() {
   const opt = sel.options[sel.selectedIndex];
   const unit = opt?.dataset?.unit || 'm³';
 
-  const unitIn = document.getElementById('checkin_unit');
-  if (unitIn) unitIn.value = unit;
+  const hiddenUnit = document.getElementById('checkin_unit');
+  if (hiddenUnit) hiddenUnit.value = unit;
 
   const stdBadge = document.getElementById('checkinStdUnitBadge') || document.getElementById('unitBadgeStd');
-  if (stdBadge) {
-    if (stdBadge.tagName === 'INPUT') stdBadge.value = unit;
-    else stdBadge.textContent = unit;
-  }
+  if (stdBadge) stdBadge.textContent = unit;
 
   const actualBadge = document.getElementById('checkinActualUnitBadge') || document.getElementById('unitBadgeActual');
   if (actualBadge) actualBadge.textContent = unit;
@@ -1479,12 +1467,6 @@ function openEditTicketModalById(id) {
   const volIn = document.getElementById('edit_actual_volume');
   if (volIn) volIn.value = ticket.actual_volume;
 
-  const matIn = document.getElementById('edit_material');
-  if (matIn) matIn.value = ticket.material_name || '';
-
-  const unitIn = document.getElementById('edit_unit');
-  if (unitIn) unitIn.value = ticket.unit || 'm³';
-
   const reasonIn = document.getElementById('edit_adjust_reason');
   if (reasonIn) reasonIn.value = ticket.adjustment_reason || '';
 
@@ -1505,8 +1487,6 @@ async function saveEditTicket(e) {
   const id = document.getElementById('edit_ticket_id')?.value;
   const plate_number = (document.getElementById('edit_plate')?.value || '').trim().toUpperCase();
   const actual_volume = parseFloat(document.getElementById('edit_actual_volume')?.value);
-  const material_name = (document.getElementById('edit_material')?.value || '').trim();
-  const unit = (document.getElementById('edit_unit')?.value || 'm³').trim();
   const adjustment_reason = (document.getElementById('edit_adjust_reason')?.value || '').trim();
   const notes = (document.getElementById('edit_notes')?.value || '').trim();
 
@@ -1526,8 +1506,6 @@ async function saveEditTicket(e) {
       body: JSON.stringify({
         plate_number,
         actual_volume,
-        material_name: material_name || undefined,
-        unit: unit || undefined,
         adjustment_reason,
         notes,
         is_manual_adjusted: 1

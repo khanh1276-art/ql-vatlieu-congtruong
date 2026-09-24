@@ -154,8 +154,11 @@ function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
   `);
 
-  seedDefaultData();
-  seedUsers();
+  const loadedFromSeed = seedFromInitialJsonIfAvailable();
+  if (!loadedFromSeed) {
+    seedDefaultData();
+    seedUsers();
+  }
   ensureDefaultUsersAndTickets();
 }
 
@@ -312,7 +315,8 @@ function seedFromInitialJsonIfAvailable() {
     const data = JSON.parse(raw);
     console.log('[SEED] Đang nạp dữ liệu từ data/initial_seed.json...');
 
-    db.exec('BEGIN');
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec('BEGIN TRANSACTION;');
 
     // Projects
     const insProj = db.prepare(`
@@ -377,19 +381,21 @@ function seedFromInitialJsonIfAvailable() {
       );
     }
 
-    db.exec('COMMIT');
+    db.exec('COMMIT;');
+    db.exec('PRAGMA foreign_keys = ON;');
     console.log(`[SEED] Đã nạp thành công ${(data.tickets || []).length} phiếu từ initial_seed.json!`);
     return true;
   } catch (err) {
-    db.exec('ROLLBACK');
+    try { db.exec('ROLLBACK;'); } catch (rbErr) {}
+    try { db.exec('PRAGMA foreign_keys = ON;'); } catch (fkErr) {}
     console.error('[SEED] Lỗi khi nạp initial_seed.json:', err.message);
     return false;
   }
 }
 
 function ensureDefaultUsersAndTickets() {
-  const loaded = seedFromInitialJsonIfAvailable();
-  if (loaded) return;
+  const countTickets = db.prepare('SELECT COUNT(*) as count FROM tickets').get().count;
+  if (countTickets > 100) return;
 
   // Đảm bảo tài khoản Quản lý / Điều hành mặc định luôn tồn tại
   const checkMod = db.prepare("SELECT * FROM users WHERE username = 'dieuhanh'").get();
