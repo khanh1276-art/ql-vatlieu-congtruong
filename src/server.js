@@ -1940,7 +1940,7 @@ function escapeXml(unsafe) {
 }
 
 // Khởi động lắng nghe cổng máy chủ HTTP (Zero-Dependency)
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`=====================================================`);
   console.log(` PHẦN MỀM QUẢN LÝ KHO VẬT LIỆU CÔNG TRƯỜNG`);
   console.log(` Máy chủ đang chạy tại: http://localhost:${PORT}`);
