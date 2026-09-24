@@ -504,6 +504,12 @@
               <option value="">-- Tất cả dự án --</option>
             </select>
           </div>
+          <div id="dailySupplierFilterWrapper">
+            <label class="text-xs font-bold text-slate-700 uppercase tracking-wider mr-2">Nhà Cung Cấp:</label>
+            <select id="dailySupplierFilter" onchange="loadDailyReport()" class="text-xs font-semibold px-3 py-2 border border-slate-300 rounded-lg max-w-[200px] sm:max-w-xs">
+              <option value="">-- Tất cả NCC --</option>
+            </select>
+          </div>
           <div>
             <label class="text-xs font-bold text-slate-700 uppercase tracking-wider mr-2">Ngày:</label>
             <input type="date" id="dailyReportDate" onchange="loadDailyReport()"

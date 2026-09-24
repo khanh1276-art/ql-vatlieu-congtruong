@@ -549,6 +549,7 @@ function populateSupplierDropdowns() {
   const checkinSel = document.getElementById('checkin_supplier');
   const vehSel = document.getElementById('veh_supplier');
   const cumSel = document.getElementById('cumSupplierFilter');
+  const dailySel = document.getElementById('dailySupplierFilter');
 
   const options = '<option value="">-- Chọn nhà cung cấp --</option>' +
     AppState.suppliers.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
@@ -556,8 +557,16 @@ function populateSupplierDropdowns() {
   if (checkinSel) checkinSel.innerHTML = options;
   if (vehSel) vehSel.innerHTML = options;
   if (cumSel) {
+    const cur = cumSel.value;
     cumSel.innerHTML = '<option value="">-- Tất cả nhà cung cấp --</option>' +
       AppState.suppliers.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+    if (cur) cumSel.value = cur;
+  }
+  if (dailySel) {
+    const cur = dailySel.value;
+    dailySel.innerHTML = '<option value="">-- Tất cả nhà cung cấp --</option>' +
+      AppState.suppliers.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+    if (cur) dailySel.value = cur;
   }
 }
 
@@ -1297,9 +1306,12 @@ async function loadDailyReport() {
   const date = dateInput ? dateInput.value : getTodayDateStr();
   const projSel = document.getElementById('dailyProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
+  const supplierSel = document.getElementById('dailySupplierFilter');
+  const supplierId = supplierSel ? supplierSel.value : '';
 
   let url = `/api/reports/daily?date=${date}`;
   if (projectId) url += `&projectId=${projectId}`;
+  if (supplierId) url += `&supplierId=${supplierId}`;
 
   // Kiểm tra quy tắc khóa số liệu: nếu người dùng là SITE_USER và xem ngày cũ -> Hiện thông báo khóa sổ
   const isSiteUser = AppState.currentUser && AppState.currentUser.role === 'SITE_USER';
@@ -1537,9 +1549,12 @@ function exportDailyExcel() {
   const date = dateInput ? dateInput.value : getTodayDateStr();
   const projSel = document.getElementById('dailyProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
+  const supplierSel = document.getElementById('dailySupplierFilter');
+  const supplierId = supplierSel ? supplierSel.value : '';
 
   let url = `/api/reports/export-excel?type=daily&date=${date}`;
   if (projectId) url += `&projectId=${projectId}`;
+  if (supplierId) url += `&supplierId=${supplierId}`;
   if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
   window.location.href = url;
 }

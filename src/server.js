@@ -1222,21 +1222,26 @@ const server = http.createServer(async (req, res) => {
       const currentUser = getAuthenticatedUser(req);
       const date = url.searchParams.get('date') || getLocalDateString();
       let projectId = url.searchParams.get('projectId');
+      const supplierId = url.searchParams.get('supplierId');
 
       if (currentUser && currentUser.role === 'SITE_USER') {
         projectId = currentUser.project_id;
       }
 
-      let projectFilter = '';
+      let extraFilter = '';
       const params = [date];
       if (projectId) {
-        projectFilter = ' AND project_id = ?';
+        extraFilter += ' AND project_id = ?';
         params.push(parseInt(projectId, 10));
+      }
+      if (supplierId) {
+        extraFilter += ' AND supplier_id = ?';
+        params.push(parseInt(supplierId, 10));
       }
 
       const tickets = db.prepare(`
         SELECT * FROM tickets
-        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
+        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${extraFilter}
         ORDER BY time_in ASC
       `).all(...params);
 
@@ -1247,7 +1252,7 @@ const server = http.createServer(async (req, res) => {
           COUNT(DISTINCT plate_number) as total_vehicles,
           COUNT(DISTINCT project_name) as total_projects
         FROM tickets
-        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
+        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${extraFilter}
       `).get(...params);
 
       const byMaterial = db.prepare(`
@@ -1257,7 +1262,7 @@ const server = http.createServer(async (req, res) => {
           COUNT(*) as trips,
           ROUND(SUM(actual_volume), 2) as volume
         FROM tickets
-        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
+        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${extraFilter}
         GROUP BY material_name, unit
         ORDER BY trips DESC
       `).all(...params);
@@ -1267,7 +1272,7 @@ const server = http.createServer(async (req, res) => {
           supplier_name,
           COUNT(*) as trips
         FROM tickets
-        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
+        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${extraFilter}
         GROUP BY supplier_name
         ORDER BY trips DESC
       `).all(...params);
@@ -1278,19 +1283,25 @@ const server = http.createServer(async (req, res) => {
           project_name,
           COUNT(*) as trips
         FROM tickets
-        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${projectFilter}
+        WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${extraFilter}
         GROUP BY project_name
         ORDER BY trips DESC
       `).all(...params);
 
       for (const p of byProject) {
+        let pFilter = `WHERE date(time_in) = date(?) AND status != 'CANCELLED' AND project_name = ?`;
+        const pParams = [date, p.project_name];
+        if (supplierId) {
+          pFilter += ` AND supplier_id = ?`;
+          pParams.push(parseInt(supplierId, 10));
+        }
         p.volume_by_unit = db.prepare(`
           SELECT unit, ROUND(SUM(actual_volume), 2) as volume
           FROM tickets
-          WHERE date(time_in) = date(?) AND status != 'CANCELLED' AND project_name = ?
+          ${pFilter}
           GROUP BY unit
           ORDER BY volume DESC
-        `).all(params[0], p.project_name);
+        `).all(...pParams);
       }
 
       return sendJson(res, 200, {
@@ -1441,6 +1452,7 @@ const server = http.createServer(async (req, res) => {
       const startDate = url.searchParams.get('startDate') || date;
       const endDate = url.searchParams.get('endDate') || date;
       let projectId = url.searchParams.get('projectId');
+      const supplierId = url.searchParams.get('supplierId');
 
       if (currentUser && currentUser.role === 'SITE_USER') {
         projectId = currentUser.project_id;
@@ -1456,6 +1468,10 @@ const server = http.createServer(async (req, res) => {
           filterSql += ` AND project_id = ?`;
           params.push(parseInt(projectId, 10));
         }
+        if (supplierId) {
+          filterSql += ` AND supplier_id = ?`;
+          params.push(parseInt(supplierId, 10));
+        }
 
         const tickets = db.prepare(`SELECT * FROM tickets WHERE ${filterSql} ORDER BY time_in ASC`).all(...params);
         const summary = db.prepare(`SELECT COUNT(*) as trips FROM tickets WHERE ${filterSql}`).get(...params);
@@ -1467,6 +1483,10 @@ const server = http.createServer(async (req, res) => {
         if (projectId) {
           filterSql += ` AND project_id = ?`;
           params.push(parseInt(projectId, 10));
+        }
+        if (supplierId) {
+          filterSql += ` AND supplier_id = ?`;
+          params.push(parseInt(supplierId, 10));
         }
 
         const cumulativeData = db.prepare(`
