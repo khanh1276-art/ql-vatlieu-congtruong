@@ -181,6 +181,11 @@ function migrateSchema() {
   if (!vehicleCols.includes('unit')) {
     db.exec(`ALTER TABLE vehicles ADD COLUMN unit TEXT DEFAULT 'm³';`);
   }
+
+  // Xóa sạch các phiếu tạm/dự kiến ngày 24/09/2026 theo yêu cầu
+  try {
+    db.prepare('DELETE FROM tickets WHERE date(time_in) = ?').run('2026-09-24');
+  } catch (e) {}
 }
 
 function seedDefaultData() {
