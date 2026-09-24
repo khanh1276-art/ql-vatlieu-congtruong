@@ -3,4 +3,6 @@ Thumbs.db
 node_modules/
 .system_generated/
 *.log
-data/*.db*
+data/*.db-wal
+data/*.db-shm
+data/*backup*.db
