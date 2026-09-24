@@ -221,6 +221,18 @@ function seedDefaultData() {
     insertSupplier.run('NCC-HOANGLONG', 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', '0987.654.321', 'Trần Văn Hùng', 'Đá mỏ Hà Nam, thép Hòa Phát');
     insertSupplier.run('NCC-TIENPHAT', 'Doanh nghiệp Tư nhân Vận tải Tiến Phát', '0905.112.233', 'Lê Văn Hưng', 'Cát san lấp, đất đắp công trình');
   }
+
+  const countVehicles = db.prepare('SELECT COUNT(*) as count FROM vehicles').get().count;
+  if (countVehicles === 0) {
+    const insertVeh = db.prepare(`
+      INSERT INTO vehicles (plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertVeh.run('29C-771.88', 'Howo 4 chân', 2, 1, 12, 2.4, 1.5, 30, 'Tấn', 'Xe thùng dài chở thép');
+    insertVeh.run('29C-881.23', 'Dongfeng 3 chân', 1, 1, 5.0, 2.3, 0.87, 10, 'm³', 'Xe ben chở cát');
+    insertVeh.run('29H-723.45', 'Hino 3 chân', 2, 1, 5.8, 2.3, 1.05, 14, 'm³', 'Xe ben chở cát đá');
+    insertVeh.run('29C-912.68', 'Howo 4 chân', 2, 1, 6.0, 2.3, 1.09, 15, 'm³', 'Xe ben chở cát đá');
+  }
 }
 
 // Khởi tạo các tài khoản người dùng mặc định (Admin + 3 công trường)
@@ -288,7 +300,97 @@ function seedUsers() {
   console.log('Đã tạo thành công danh sách tài khoản mặc định!');
 }
 
+function seedFromInitialJsonIfAvailable() {
+  const seedPath = path.join(__dirname, '..', 'data', 'initial_seed.json');
+  if (!fs.existsSync(seedPath)) return false;
+
+  const countTickets = db.prepare('SELECT COUNT(*) as count FROM tickets').get().count;
+  if (countTickets > 100) return true;
+
+  try {
+    const raw = fs.readFileSync(seedPath, 'utf8');
+    const data = JSON.parse(raw);
+    console.log('[SEED] Đang nạp dữ liệu từ data/initial_seed.json...');
+
+    db.exec('BEGIN');
+
+    // Projects
+    const insProj = db.prepare(`
+      INSERT OR IGNORE INTO projects (id, code, name, location, status, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const p of data.projects || []) {
+      insProj.run(p.id, p.code, p.name, p.location || '', p.status || 'ACTIVE', p.notes || '', p.created_at || null);
+    }
+
+    // Suppliers
+    const insSupp = db.prepare(`
+      INSERT OR IGNORE INTO suppliers (id, code, name, phone, contact_person, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const s of data.suppliers || []) {
+      insSupp.run(s.id, s.code, s.name, s.phone || '', s.contact_person || '', s.notes || '', s.created_at || null);
+    }
+
+    // Materials
+    const insMat = db.prepare(`
+      INSERT OR IGNORE INTO materials (id, code, name, unit, description, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const m of data.materials || []) {
+      insMat.run(m.id, m.code, m.name, m.unit || 'm³', m.description || '', m.created_at || null);
+    }
+
+    // Vehicles
+    const insVeh = db.prepare(`
+      INSERT OR IGNORE INTO vehicles (id, plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, default_material_id, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const v of data.vehicles || []) {
+      insVeh.run(v.id, v.plate_number, v.model_type || '', v.supplier_id || null, v.project_id || null, v.length || 0, v.width || 0, v.height || 0, v.standard_volume || 0, v.unit || 'm³', v.default_material_id || null, v.notes || '', v.created_at || null);
+    }
+
+    // Users
+    const insUser = db.prepare(`
+      INSERT OR IGNORE INTO users (id, username, password_hash, full_name, role, project_id, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const u of data.users || []) {
+      insUser.run(u.id, u.username, u.password_hash, u.full_name || '', u.role || 'SITE_USER', u.project_id || null, u.status || 'ACTIVE', u.created_at || null);
+    }
+
+    // Tickets
+    const insTicket = db.prepare(`
+      INSERT OR IGNORE INTO tickets (
+        id, ticket_code, project_id, project_name, vehicle_id, plate_number,
+        supplier_id, supplier_name, material_id, material_name, unit,
+        time_in, time_out, length, width, height, standard_volume, actual_volume,
+        is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const t of data.tickets || []) {
+      insTicket.run(
+        t.id, t.ticket_code, t.project_id || null, t.project_name || '', t.vehicle_id || null, t.plate_number,
+        t.supplier_id || null, t.supplier_name || '', t.material_id || null, t.material_name || '', t.unit || 'm³',
+        t.time_in, t.time_out || null, t.length || 0, t.width || 0, t.height || 0, t.standard_volume || 0, t.actual_volume || 0,
+        t.is_manual_adjusted ? 1 : 0, t.adjustment_reason || '', t.status || 'COMPLETED', t.created_by || 'Hệ thống', t.notes || '', t.created_at || t.time_in
+      );
+    }
+
+    db.exec('COMMIT');
+    console.log(`[SEED] Đã nạp thành công ${(data.tickets || []).length} phiếu từ initial_seed.json!`);
+    return true;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    console.error('[SEED] Lỗi khi nạp initial_seed.json:', err.message);
+    return false;
+  }
+}
+
 function ensureDefaultUsersAndTickets() {
+  const loaded = seedFromInitialJsonIfAvailable();
+  if (loaded) return;
+
   // Đảm bảo tài khoản Quản lý / Điều hành mặc định luôn tồn tại
   const checkMod = db.prepare("SELECT * FROM users WHERE username = 'dieuhanh'").get();
   if (!checkMod) {
@@ -349,24 +451,24 @@ function seedSampleTickets() {
     const mCatSan = db.prepare("SELECT * FROM materials WHERE code = 'CAT-SANLAP'").get();
 
     if (mThep) {
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0001`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v1?.id || 1, '29C-771.88', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mThep.id, mThep.name, mThep.unit, `${todayStr} 07:15:00`, `${todayStr} 07:45:00`, 12, 2.4, 1.5, 30, 30, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Thép móng trụ P12');
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0002`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v1?.id || 1, '29C-771.88', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mThep.id, mThep.name, mThep.unit, `${todayStr} 13:20:00`, `${todayStr} 13:55:00`, 12, 2.4, 1.5, 30, 30, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Thép dầm trụ P13');
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0003`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v1?.id || 1, '29C-771.88', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mThep.id, mThep.name, mThep.unit, `${todayStr} 16:10:00`, `${todayStr} 16:40:00`, 12, 2.4, 1.5, 30, 30, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Thép mũ mố M1');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0001`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v1?.id || null, '29C-771.88', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mThep.id, mThep.name, mThep.unit, `${todayStr} 07:15:00`, `${todayStr} 07:45:00`, 12, 2.4, 1.5, 30, 30, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Thép móng trụ P12');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0002`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v1?.id || null, '29C-771.88', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mThep.id, mThep.name, mThep.unit, `${todayStr} 13:20:00`, `${todayStr} 13:55:00`, 12, 2.4, 1.5, 30, 30, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Thép dầm trụ P13');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0003`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v1?.id || null, '29C-771.88', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mThep.id, mThep.name, mThep.unit, `${todayStr} 16:10:00`, `${todayStr} 16:40:00`, 12, 2.4, 1.5, 30, 30, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Thép mũ mố M1');
     }
     if (mCat) {
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0004`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v2?.id || 1, '29C-881.23', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mCat.id, mCat.name, mCat.unit, `${todayStr} 08:30:00`, `${todayStr} 09:10:00`, 5.0, 2.3, 0.87, 10, 10, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Cát trạm trộn');
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0005`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v3?.id || 2, '29H-723.45', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mCat.id, mCat.name, mCat.unit, `${todayStr} 09:40:00`, `${todayStr} 10:20:00`, 5.8, 2.3, 1.05, 14, 14, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Cát đúc dầm');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0004`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v2?.id || null, '29C-881.23', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mCat.id, mCat.name, mCat.unit, `${todayStr} 08:30:00`, `${todayStr} 09:10:00`, 5.0, 2.3, 0.87, 10, 10, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Cát trạm trộn');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0005`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v3?.id || null, '29H-723.45', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mCat.id, mCat.name, mCat.unit, `${todayStr} 09:40:00`, `${todayStr} 10:20:00`, 5.8, 2.3, 1.05, 14, 14, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Cát đúc dầm');
       // 1 xe đang trong bãi
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0006`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v4?.id || 4, '29C-912.68', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mCat.id, mCat.name, mCat.unit, `${todayStr} 17:00:00`, null, 6.0, 2.3, 1.09, 15, 15, 0, null, 'IN_YARD', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Đang chờ dỡ cát bãi 2');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0006`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v4?.id || null, '29C-912.68', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mCat.id, mCat.name, mCat.unit, `${todayStr} 17:00:00`, null, 6.0, 2.3, 1.09, 15, 15, 0, null, 'IN_YARD', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Đang chờ dỡ cát bãi 2');
     }
     if (mDa1) {
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0007`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v3?.id || 2, '29H-723.45', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mDa1.id, mDa1.name, mDa1.unit, `${todayStr} 10:50:00`, `${todayStr} 11:30:00`, 5.8, 2.3, 1.05, 14, 14, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Đá trạm trộn bê tông');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0007`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v3?.id || null, '29H-723.45', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mDa1.id, mDa1.name, mDa1.unit, `${todayStr} 10:50:00`, `${todayStr} 11:30:00`, 5.8, 2.3, 1.05, 14, 14, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Đá trạm trộn bê tông');
     }
     if (mDa4) {
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0008`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v4?.id || 4, '29C-912.68', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mDa4.id, mDa4.name, mDa4.unit, `${todayStr} 14:15:00`, `${todayStr} 14:50:00`, 6.0, 2.3, 1.09, 15, 15, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Đá lót móng');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0008`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v4?.id || null, '29C-912.68', 2, 'Công ty TNHH Vận tải & Xây dựng Hoàng Long', mDa4.id, mDa4.name, mDa4.unit, `${todayStr} 14:15:00`, `${todayStr} 14:50:00`, 6.0, 2.3, 1.09, 15, 15, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Đá lót móng');
     }
     if (mCatSan) {
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0009`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v2?.id || 1, '29C-881.23', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mCatSan.id, mCatSan.name, mCatSan.unit, `${todayStr} 15:30:00`, `${todayStr} 16:05:00`, 5.0, 2.3, 0.87, 10, 10, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Cát tôn nền đường dẫn');
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0009`, 1, 'Dự án Cầu Vĩnh Tuy 2 - Gói thầu 03', v2?.id || null, '29C-881.23', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mCatSan.id, mCatSan.name, mCatSan.unit, `${todayStr} 15:30:00`, `${todayStr} 16:05:00`, 5.0, 2.3, 0.87, 10, 10, 0, null, 'COMPLETED', 'Trực Cổng - Cầu Vĩnh Tuy 2', 'Cát tôn nền đường dẫn');
     }
   }
 
@@ -395,7 +497,15 @@ function seedSampleTickets() {
       insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0013`, 2, 'Khu đô thị Sinh thái Ven Sông - Phân khu B', vCong.id, '29H-445.67', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mTron.id, mTron.name, mTron.unit, `${todayStr} 15:00:00`, `${todayStr} 15:40:00`, 8.5, 2.35, 0.8, 12.5, 12.5, 0, null, 'COMPLETED', 'Trực Cổng - KĐT Sinh Thái', 'Cống thoát nước mưa');
     }
     if (mDat) {
-      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0014`, 2, 'Khu đô thị Sinh thái Ven Sông - Phân khu B', 5, '30H-339.81', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mDat.id, mDat.name, mDat.unit, `${todayStr} 09:15:00`, `${todayStr} 09:50:00`, 5.0, 2.3, 0.74, 8.5, 8.5, 0, null, 'COMPLETED', 'Trực Cổng - KĐT Sinh Thái', 'Đất đắp taluy ven sông');
+      let vDat = db.prepare("SELECT id FROM vehicles WHERE plate_number = '30H-339.81'").get();
+      if (!vDat) {
+        const resVDat = db.prepare(`
+          INSERT INTO vehicles (plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run('30H-339.81', 'Xe ben 3 chân chở đất', 1, 2, 5.0, 2.3, 0.74, 8.5, 'm³', 'Xe chở đất san lấp KĐT');
+        vDat = { id: resVDat.lastInsertRowid };
+      }
+      insertTicket.run(`NK-${todayStr.replace(/-/g, '')}-0014`, 2, 'Khu đô thị Sinh thái Ven Sông - Phân khu B', vDat.id, '30H-339.81', 1, 'Công ty CP Cung ứng VLXD Sông Đà', mDat.id, mDat.name, mDat.unit, `${todayStr} 09:15:00`, `${todayStr} 09:50:00`, 5.0, 2.3, 0.74, 8.5, 8.5, 0, null, 'COMPLETED', 'Trực Cổng - KĐT Sinh Thái', 'Đất đắp taluy ven sông');
     }
   }
 

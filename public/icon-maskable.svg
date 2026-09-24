@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <!-- Full bleed background for adaptive/maskable icons -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- Crane / Construction Icon in safe zone -->
+  <g transform="translate(76, 70) scale(0.70)">
+    <!-- Base / Tower -->
+    <rect x="220" y="200" width="32" height="260" fill="#f59e0b" rx="4"/>
+    <path d="M220 220 L252 260 M252 220 L220 260 M220 280 L252 320 M252 280 L220 320 M220 340 L252 380 M252 340 L220 380 M220 400 L252 440 M252 400 L220 440" stroke="#b45309" stroke-width="4"/>
+    <!-- Cab -->
+    <rect x="200" y="160" width="72" height="48" fill="#3b82f6" rx="8"/>
+    <rect x="208" y="168" width="32" height="32" fill="#dbeafe" rx="4"/>
+    <!-- Jib / Boom -->
+    <rect x="60" y="148" width="400" height="20" fill="#f59e0b" rx="4"/>
+    <!-- Counterweight -->
+    <rect x="60" y="140" width="60" height="36" fill="#64748b" rx="4"/>
+    <!-- Apex Tower -->
+    <polygon points="236,90 220,148 252,148" fill="#f59e0b"/>
+    <!-- Cables -->
+    <line x1="236" y1="90" x2="60" y2="148" stroke="#94a3b8" stroke-width="3"/>
+    <line x1="236" y1="90" x2="440" y2="148" stroke="#94a3b8" stroke-width="3"/>
+    <!-- Trolley & Hook -->
+    <rect x="370" y="168" width="24" height="12" fill="#334155" rx="2"/>
+    <line x1="382" y1="180" x2="382" y2="280" stroke="#94a3b8" stroke-width="4"/>
+    <circle cx="382" cy="290" r="10" fill="none" stroke="#f59e0b" stroke-width="5"/>
+    <!-- Material bucket -->
+    <polygon points="360,300 404,300 396,330 368,330" fill="#10b981"/>
+    <!-- Ground line -->
+    <line x1="160" y1="460" x2="312" y2="460" stroke="#475569" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <!-- Text Label -->
+  <text x="256" y="430" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="2">KHO VẬT LIỆU</text>
+</svg>
