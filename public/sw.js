@@ -1,10 +1,11 @@
 // Service Worker cho ứng dụng PWA Quản lý Kho Vật Liệu
-const CACHE_NAME = 'kho-vat-lieu-v2';
+const CACHE_NAME = 'kho-vat-lieu-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/style.css',
   '/app.js',
+  '/xlsx.full.min.js',
   '/manifest.json',
   '/icon.svg',
   '/icon-192.png',

@@ -36,11 +36,73 @@ function getLocalDateString(d = new Date()) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+// Chuẩn hóa chuỗi thời gian (hỗ trợ ISO, DD/MM/YYYY, HH:mm hoặc Date object)
+function normalizeDateTime(val, fallbackDate = getLocalDateString()) {
+  if (!val) return `${fallbackDate} 08:00:00`;
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return getLocalDateTime(val);
+  }
+  const str = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(str)) {
+    const clean = str.replace('T', ' ');
+    return clean.length === 16 ? `${clean}:00` : clean;
+  }
+  const dmyMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})([ T](\d{1,2}:\d{1,2}(:\d{1,2})?))?$/);
+  if (dmyMatch) {
+    const day = dmyMatch[1].padStart(2, '0');
+    const month = dmyMatch[2].padStart(2, '0');
+    const year = dmyMatch[3];
+    let timePart = '08:00:00';
+    if (dmyMatch[5]) {
+      const parts = dmyMatch[5].split(':');
+      const h = parts[0].padStart(2, '0');
+      const m = parts[1].padStart(2, '0');
+      const s = (parts[2] || '00').padStart(2, '0');
+      timePart = `${h}:${m}:${s}`;
+    }
+    return `${year}-${month}-${day} ${timePart}`;
+  }
+  if (/^\d{1,2}:\d{1,2}(:\d{1,2})?$/.test(str)) {
+    const parts = str.split(':');
+    const h = parts[0].padStart(2, '0');
+    const m = parts[1].padStart(2, '0');
+    const s = (parts[2] || '00').padStart(2, '0');
+    return `${fallbackDate} ${h}:${m}:${s}`;
+  }
+  return `${fallbackDate} 08:00:00`;
+}
+
 // Sinh mã phiếu theo ngày: NK-YYYYMMDD-XXXX
-function generateTicketCode() {
-  const now = new Date();
+function generateTicketCode(customDateOrString = null) {
+  let d = new Date();
+  if (customDateOrString) {
+    if (typeof customDateOrString === 'string' && customDateOrString.length >= 10) {
+      const cleanDate = customDateOrString.slice(0, 10).replace(/[^0-9]/g, '');
+      if (cleanDate.length === 8) {
+        const prefix = `NK-${cleanDate}-`;
+        const lastTicket = db.prepare(`
+          SELECT ticket_code FROM tickets 
+          WHERE ticket_code LIKE ? 
+          ORDER BY id DESC LIMIT 1
+        `).get(`${prefix}%`);
+
+        let nextSeq = 1;
+        if (lastTicket && lastTicket.ticket_code) {
+          const parts = lastTicket.ticket_code.split('-');
+          const currentSeq = parseInt(parts[parts.length - 1], 10);
+          if (!isNaN(currentSeq)) {
+            nextSeq = currentSeq + 1;
+          }
+        }
+        return `${prefix}${String(nextSeq).padStart(4, '0')}`;
+      }
+    }
+    const parsed = new Date(customDateOrString);
+    if (!isNaN(parsed.getTime())) d = parsed;
+  }
+
   const pad = (n) => String(n).padStart(2, '0');
-  const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  const dateStr = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
   const prefix = `NK-${dateStr}-`;
 
   const lastTicket = db.prepare(`
@@ -1215,6 +1277,294 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: true, id, ticket_code: ticket.ticket_code });
     }
 
+    // 7.8 API NHẬP LIỆU BỔ SUNG THEO LÔ TỪ FILE EXCEL BÁO CÁO NGÀY
+    if (pathname === '/api/tickets/import-batch' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      const body = await parseRequestBody(req);
+
+      const items = Array.isArray(body.tickets) ? body.tickets : [];
+      if (items.length === 0) {
+        return sendJson(res, 400, { error: 'Danh sách dữ liệu nhập rỗng hoặc không đúng định dạng.' });
+      }
+
+      // Kiểm tra quyền đối với tài khoản công trường
+      if (currentUser && currentUser.role === 'SITE_USER') {
+        if (body.project_id && parseInt(body.project_id, 10) !== currentUser.project_id) {
+          return sendJson(res, 403, { error: 'Bạn chỉ có quyền nhập dữ liệu cho công trường được phân công!' });
+        }
+      }
+
+      const duplicateMode = body.duplicate_mode || 'update'; // 'update' | 'skip' | 'generate_new'
+      const fallbackDate = body.default_date || getLocalDateString();
+      const overrideProjectId = body.project_id ? parseInt(body.project_id, 10) : null;
+
+      let insertedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+
+      // Chuẩn bị statement tái sử dụng
+      const stmtFindProjectById = db.prepare('SELECT id, name FROM projects WHERE id = ?');
+      const stmtFindProjectByName = db.prepare('SELECT id, name FROM projects WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) OR LOWER(TRIM(code)) = LOWER(TRIM(?))');
+      const stmtFindProjectLike = db.prepare('SELECT id, name FROM projects WHERE LOWER(TRIM(name)) LIKE ? OR LOWER(TRIM(code)) LIKE ?');
+      const stmtInsertProject = db.prepare('INSERT INTO projects (code, name, notes) VALUES (?, ?, ?)');
+      const stmtGetDefaultProject = db.prepare('SELECT id, name FROM projects ORDER BY id ASC LIMIT 1');
+
+      const stmtFindSupplierByName = db.prepare('SELECT id, name FROM suppliers WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) OR LOWER(TRIM(code)) = LOWER(TRIM(?))');
+      const stmtFindSupplierLike = db.prepare('SELECT id, name FROM suppliers WHERE LOWER(TRIM(name)) LIKE ?');
+      const stmtInsertSupplier = db.prepare('INSERT INTO suppliers (code, name, notes) VALUES (?, ?, ?)');
+
+      const stmtFindMaterialByName = db.prepare('SELECT id, name, unit FROM materials WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) OR LOWER(TRIM(code)) = LOWER(TRIM(?))');
+      const stmtFindMaterialLike = db.prepare('SELECT id, name, unit FROM materials WHERE LOWER(TRIM(name)) LIKE ?');
+      const stmtInsertMaterial = db.prepare('INSERT INTO materials (code, name, unit) VALUES (?, ?, ?)');
+
+      const stmtFindVehicle = db.prepare('SELECT id, length, width, height, standard_volume, unit FROM vehicles WHERE plate_number = ?');
+      const stmtInsertVehicle = db.prepare(`
+        INSERT INTO vehicles (plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, default_material_id, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const stmtFindTicketByCode = db.prepare('SELECT * FROM tickets WHERE ticket_code = ?');
+      const stmtInsertTicket = db.prepare(`
+        INSERT INTO tickets (
+          ticket_code, project_id, project_name, vehicle_id, plate_number, supplier_id, supplier_name,
+          material_id, material_name, unit, time_in, time_out,
+          length, width, height, standard_volume, actual_volume,
+          is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const stmtUpdateTicket = db.prepare(`
+        UPDATE tickets SET
+          project_id = ?, project_name = ?, vehicle_id = ?, plate_number = ?,
+          supplier_id = ?, supplier_name = ?, material_id = ?, material_name = ?, unit = ?,
+          time_in = ?, time_out = ?,
+          length = ?, width = ?, height = ?, standard_volume = ?, actual_volume = ?,
+          is_manual_adjusted = ?, adjustment_reason = ?, status = ?, notes = ?
+        WHERE id = ?
+      `);
+
+      // Khởi tạo Transaction an toàn
+      db.exec('BEGIN TRANSACTION');
+      try {
+        for (let idx = 0; idx < items.length; idx++) {
+          const item = items[idx];
+          const plate = String(item.plate_number || '').trim().toUpperCase();
+          if (!plate) {
+            skippedCount++;
+            continue;
+          }
+
+          // 1. Xác định Dự Án
+          let pId = overrideProjectId;
+          let pName = '';
+
+          if (currentUser && currentUser.role === 'SITE_USER') {
+            pId = currentUser.project_id;
+            pName = currentUser.project_name;
+          } else if (pId) {
+            const p = stmtFindProjectById.get(pId);
+            if (p) pName = p.name;
+          } else if (item.project_name && String(item.project_name).trim()) {
+            const rawPName = String(item.project_name).trim();
+            let p = stmtFindProjectByName.get(rawPName, rawPName);
+            if (!p) {
+              p = stmtFindProjectLike.get(`%${rawPName}%`, `%${rawPName}%`);
+            }
+            if (p) {
+              pId = p.id;
+              pName = p.name;
+            } else {
+              const pCode = 'DA-' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 100);
+              const resP = stmtInsertProject.run(pCode, rawPName, 'Tự động tạo khi nhập bổ sung Excel');
+              pId = resP.lastInsertRowid;
+              pName = rawPName;
+            }
+          }
+
+          if (!pId) {
+            const defP = stmtGetDefaultProject.get();
+            if (defP) {
+              pId = defP.id;
+              pName = defP.name;
+            } else {
+              pName = 'Công trường';
+            }
+          }
+
+          // 2. Xác định Nhà Cung Cấp
+          let sId = null;
+          let sName = String(item.supplier_name || '').trim();
+          if (sName) {
+            let s = stmtFindSupplierByName.get(sName, sName);
+            if (!s) {
+              s = stmtFindSupplierLike.get(`%${sName}%`);
+            }
+            if (s) {
+              sId = s.id;
+              sName = s.name;
+            } else {
+              const sCode = 'NCC-' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 100);
+              const resS = stmtInsertSupplier.run(sCode, sName, 'Tự động tạo khi nhập bổ sung Excel');
+              sId = resS.lastInsertRowid;
+            }
+          } else {
+            sName = 'Chưa xác định';
+          }
+
+          // 3. Xác định Loại Vật Liệu & ĐVT
+          let mId = null;
+          let mName = String(item.material_name || '').trim();
+          let unit = String(item.unit || '').trim() || 'm³';
+
+          if (mName) {
+            let m = stmtFindMaterialByName.get(mName, mName);
+            if (!m) {
+              m = stmtFindMaterialLike.get(`%${mName}%`);
+            }
+            if (m) {
+              mId = m.id;
+              mName = m.name;
+              if (!unit && m.unit) unit = m.unit;
+            } else {
+              const mCode = 'VL-' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 100);
+              const resM = stmtInsertMaterial.run(mCode, mName, unit);
+              mId = resM.lastInsertRowid;
+            }
+          } else {
+            mName = 'Vật liệu chưa định danh';
+          }
+
+          // 4. Phân tích Kích thước (Dimensions)
+          let length = 0, width = 0, height = 0;
+          if (item.dimensions && typeof item.dimensions === 'string') {
+            const parts = item.dimensions.split(/[xX*]/).map(p => parseFloat(p.trim()));
+            if (parts.length >= 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+              length = parts[0];
+              width = parts[1];
+              height = parts[2];
+            }
+          }
+          if (item.length) length = parseFloat(item.length) || length;
+          if (item.width) width = parseFloat(item.width) || width;
+          if (item.height) height = parseFloat(item.height) || height;
+
+          // 5. Khối lượng
+          let standardVolume = parseFloat(item.standard_volume) || 0;
+          let actualVolume = parseFloat(item.actual_volume) || 0;
+          if (actualVolume <= 0 && standardVolume > 0) actualVolume = standardVolume;
+          if (standardVolume <= 0 && actualVolume > 0) standardVolume = actualVolume;
+
+          // 6. Xe vận chuyển
+          let vId = null;
+          let veh = stmtFindVehicle.get(plate);
+          if (veh) {
+            vId = veh.id;
+          } else {
+            const resV = stmtInsertVehicle.run(
+              plate,
+              'Xe vận chuyển',
+              sId,
+              pId,
+              length, width, height,
+              standardVolume,
+              unit,
+              mId,
+              'Tự động thêm khi nhập bổ sung Excel'
+            );
+            vId = resV.lastInsertRowid;
+          }
+
+          // 7. Thời gian Vào / Ra
+          let timeIn = normalizeDateTime(item.time_in, fallbackDate);
+          let timeOut = null;
+          if (item.time_out && String(item.time_out).trim() && !String(item.time_out).includes('Đang trong bãi') && !String(item.time_out).includes('Chưa ra')) {
+            timeOut = normalizeDateTime(item.time_out, fallbackDate);
+          }
+
+          const status = timeOut ? 'COMPLETED' : 'IN_YARD';
+
+          // 8. Điều chỉnh
+          let isManualAdjusted = 0;
+          let adjustReason = String(item.adjustment_reason || '').trim();
+          if (adjustReason && !adjustReason.toLowerCase().includes('đúng quy chuẩn') && !adjustReason.toLowerCase().includes('dung quy chuan')) {
+            isManualAdjusted = 1;
+          } else if (Math.abs(actualVolume - standardVolume) > 0.001) {
+            isManualAdjusted = 1;
+            if (!adjustReason) adjustReason = 'Điều chỉnh theo nghiệm thu thực tế';
+          }
+
+          // 9. Ghi chú
+          let notes = String(item.notes || '').trim();
+          if (!notes.includes('[Nhập bổ sung]')) {
+            notes = notes ? `${notes} [Nhập bổ sung]` : '[Nhập bổ sung]';
+          }
+
+          const createdBy = currentUser
+            ? `${currentUser.full_name} (${currentUser.role === 'ADMIN' ? 'Admin' : 'Công trường'} - Nhập Excel)`
+            : 'Hệ thống (Nhập bổ sung Excel)';
+
+          // 10. Xử lý Mã Phiếu & Trùng mã
+          let ticketCode = String(item.ticket_code || '').trim();
+          let existingTicket = null;
+          if (ticketCode) {
+            existingTicket = stmtFindTicketByCode.get(ticketCode);
+          }
+
+          if (existingTicket) {
+            if (duplicateMode === 'skip') {
+              skippedCount++;
+              continue;
+            } else if (duplicateMode === 'generate_new') {
+              ticketCode = generateTicketCode(timeIn);
+              stmtInsertTicket.run(
+                ticketCode, pId, pName, vId, plate, sId, sName,
+                mId, mName, unit, timeIn, timeOut,
+                length, width, height, standardVolume, actualVolume,
+                isManualAdjusted, adjustReason, status, createdBy, notes, timeIn
+              );
+              insertedCount++;
+            } else {
+              // 'update'
+              stmtUpdateTicket.run(
+                pId, pName, vId, plate,
+                sId, sName, mId, mName, unit,
+                timeIn, timeOut,
+                length, width, height, standardVolume, actualVolume,
+                isManualAdjusted, adjustReason, status, notes,
+                existingTicket.id
+              );
+              updatedCount++;
+            }
+          } else {
+            if (!ticketCode) {
+              ticketCode = generateTicketCode(timeIn);
+            }
+            stmtInsertTicket.run(
+              ticketCode, pId, pName, vId, plate, sId, sName,
+              mId, mName, unit, timeIn, timeOut,
+              length, width, height, standardVolume, actualVolume,
+              isManualAdjusted, adjustReason, status, createdBy, notes, timeIn
+            );
+            insertedCount++;
+          }
+        }
+
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        console.error('[IMPORT-BATCH] Lỗi transaction:', err);
+        return sendJson(res, 500, { error: 'Không thể nhập dữ liệu: ' + err.message });
+      }
+
+      return sendJson(res, 200, {
+        success: true,
+        message: `Xử lý thành công: ${insertedCount} thêm mới, ${updatedCount} cập nhật, ${skippedCount} bỏ qua.`,
+        inserted: insertedCount,
+        updated: updatedCount,
+        skipped: skippedCount,
+        total: items.length
+      });
+    }
+
     // =========================================================================
     // 8. BÁO CÁO HÀNG NGÀY & LŨY KẾ
     // =========================================================================
@@ -1512,6 +1862,16 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
         'Content-Disposition': `attachment; filename="${filename}"`
+      });
+      return res.end(xmlContent);
+    }
+
+    // TẢI FILE EXCEL MẪU ĐỂ NHẬP LIỆU BỔ SUNG (THEO FORM BÁO CÁO NGÀY)
+    if (pathname === '/api/reports/download-import-template' && method === 'GET') {
+      const xmlContent = buildDailyExcelTemplateXml();
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="Mau_Nhap_Lieu_Bo_Sung_Vat_Lieu.xls"'
       });
       return res.end(xmlContent);
     }
@@ -1842,6 +2202,136 @@ function buildDailyExcelXml(date, summary, tickets) {
       <Row ss:Height="24" ss:StyleID="TotalRow">
         <Cell ss:MergeAcross="13" ss:StyleID="TotalRow"><Data ss:Type="String">TỔNG CỘNG HÔM NAY: ${summary.trips} LƯỢT XE HOÀN TẤT</Data></Cell>
       </Row>
+    </Table>
+  </Worksheet>
+</Workbook>`;
+}
+
+function buildDailyExcelTemplateXml() {
+  const sampleRows = `
+    <Row>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="Number">1</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">HY-20260924-0001</Data></Cell>
+      <Cell><Data ss:Type="String">Dự án KCN Hòa Yên</Data></Cell>
+      <Cell ss:StyleID="cBold"><Data ss:Type="String">98RM 00549</Data></Cell>
+      <Cell><Data ss:Type="String">Công ty TNHH Trí Thành</Data></Cell>
+      <Cell><Data ss:Type="String">Đất san lấp / Đất đắp</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">m³</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">2026-09-24 07:30:00</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">2026-09-24 07:55:00</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">Theo xe</Data></Cell>
+      <Cell ss:StyleID="cNumber"><Data ss:Type="Number">36.23</Data></Cell>
+      <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">36.23</Data></Cell>
+      <Cell><Data ss:Type="String">Đúng quy chuẩn</Data></Cell>
+      <Cell><Data ss:Type="String">Nguồn: TRẠI CAU (Dòng mẫu)</Data></Cell>
+    </Row>
+    <Row>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="Number">2</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String"></Data></Cell>
+      <Cell><Data ss:Type="String">Dự án KCN Hòa Yên</Data></Cell>
+      <Cell ss:StyleID="cBold"><Data ss:Type="String">99C-123.45</Data></Cell>
+      <Cell><Data ss:Type="String">Công ty Khang Minh</Data></Cell>
+      <Cell><Data ss:Type="String">Cấp phối đá dăm Loại 1</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">m³</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">2026-09-24 08:15:00</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">2026-09-24 08:35:00</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="String">4.8 x 2.2 x 1.4</Data></Cell>
+      <Cell ss:StyleID="cNumber"><Data ss:Type="Number">14.78</Data></Cell>
+      <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">14.00</Data></Cell>
+      <Cell><Data ss:Type="String">Chở vơi 0.78m³</Data></Cell>
+      <Cell><Data ss:Type="String">Mã phiếu để trống sẽ tự sinh mã</Data></Cell>
+    </Row>`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+  <Styles>
+    <Style ss:ID="Default" ss:Name="Normal">
+      <Alignment ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11"/>
+    </Style>
+    <Style ss:ID="Title">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="16" ss:Bold="1" ss:Color="#0f172a"/>
+    </Style>
+    <Style ss:ID="SubTitle">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Italic="1" ss:Color="#475569"/>
+    </Style>
+    <Style ss:ID="Header">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
+        <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
+        <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
+      </Borders>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#ffffff"/>
+      <Interior ss:Color="#1e40af" ss:Pattern="Solid"/>
+    </Style>
+    <Style ss:ID="cCenter">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cBold">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cNumber">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
+      <NumberFormat ss:Format="#,##0.00"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cNumberBold">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#166534"/>
+      <NumberFormat ss:Format="#,##0.00"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+  </Styles>
+  <Worksheet ss:Name="Nhat_Trinh_Ngay">
+    <Table ss:DefaultRowHeight="22">
+      <Column ss:Width="40"/>
+      <Column ss:Width="120"/>
+      <Column ss:Width="160"/>
+      <Column ss:Width="100"/>
+      <Column ss:Width="180"/>
+      <Column ss:Width="160"/>
+      <Column ss:Width="60"/>
+      <Column ss:Width="130"/>
+      <Column ss:Width="130"/>
+      <Column ss:Width="100"/>
+      <Column ss:Width="90"/>
+      <Column ss:Width="90"/>
+      <Column ss:Width="120"/>
+      <Column ss:Width="150"/>
+
+      <Row ss:Height="30">
+        <Cell ss:MergeAcross="13" ss:StyleID="Title"><Data ss:Type="String">NHẬT TRÌNH XUẤT NHẬP VẬT LIỆU XÂY DỰNG TẠI CÔNG TRƯỜNG (MẪU NHẬP BỔ SUNG)</Data></Cell>
+      </Row>
+      <Row ss:Height="20">
+        <Cell ss:MergeAcross="13" ss:StyleID="SubTitle"><Data ss:Type="String">Lưu ý: Cột Mã Phiếu có thể để trống để hệ thống tự sinh mã. Cột Giờ Vào/Ra nhập YYYY-MM-DD HH:mm:ss hoặc HH:mm.</Data></Cell>
+      </Row>
+      <Row/>
+      <Row ss:Height="26">
+        <Cell ss:StyleID="Header"><Data ss:Type="String">STT</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Mã Phiếu</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Dự Án / Công Trường</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Biển Số Xe</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Nhà Cung Cấp</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Loại Vật Liệu</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">ĐVT</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Giờ Vào</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Giờ Ra</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Kích Thước (m)</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Quy Chuẩn</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Thực Nhận</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Điều Chỉnh</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Ghi Chú</Data></Cell>
+      </Row>
+      ${sampleRows}
     </Table>
   </Worksheet>
 </Workbook>`;

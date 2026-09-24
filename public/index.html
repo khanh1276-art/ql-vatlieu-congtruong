@@ -179,9 +179,14 @@
               </h2>
               <p class="text-xs text-slate-500">Quy chuẩn thùng cố định • Đơn vị tính tự động theo vật liệu</p>
             </div>
-            <span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-              NHẬP KHO
-            </span>
+            <div class="flex items-center gap-2">
+              <button type="button" onclick="openImportExcelModal()" class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 flex items-center gap-1 shadow-xs transition" title="Nhập bổ sung dữ liệu các chuyến xe từ file Excel báo cáo ngày">
+                <span>📥</span> Nhập Bổ Sung (Excel)
+              </button>
+              <span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                NHẬP KHO
+              </span>
+            </div>
           </div>
 
           <form id="checkInForm" onsubmit="handleCheckIn(event)" class="space-y-4">
@@ -519,6 +524,10 @@
         </div>
 
         <div class="flex items-center space-x-2 w-full md:w-auto justify-end">
+          <button onclick="openImportExcelModal()" class="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-sm" title="Nhập bổ sung các chuyến xe từ file Excel báo cáo ngày">
+            <span>📥</span>
+            <span>Nhập Bổ Sung (Excel)</span>
+          </button>
           <button onclick="printDailyReport()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-sm">
             <span>🖨️</span>
             <span>In Báo Cáo Ngày</span>
@@ -1646,6 +1655,167 @@
     </div>
   </div>
 
+  <!-- MODAL: NHẬP LIỆU BỔ SUNG THEO FILE EXCEL BÁO CÁO NGÀY -->
+  <div id="importExcelModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center hidden p-3 md:p-6">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-5xl w-full flex flex-col max-h-[92vh] overflow-hidden border border-slate-200">
+      
+      <!-- Header -->
+      <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white px-6 py-4 flex items-center justify-between shrink-0">
+        <div class="flex items-center space-x-3">
+          <div class="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center text-lg shadow-inner">
+            📥
+          </div>
+          <div>
+            <h3 class="text-base font-bold">Nhập Liệu Bổ Sung Từ File Excel Báo Cáo Ngày</h3>
+            <p class="text-xs text-blue-100">Đồng bộ dữ liệu các chuyến xe theo form chuẩn trích xuất nhật trình</p>
+          </div>
+        </div>
+        <button onclick="closeImportExcelModal()" class="text-white/80 hover:text-white text-2xl font-bold p-1 rounded-lg hover:bg-white/10 transition leading-none">&times;</button>
+      </div>
+
+      <!-- Modal Body (Scrollable) -->
+      <div class="p-6 space-y-5 overflow-y-auto flex-1 text-slate-800">
+
+        <!-- Top Tool / Option Bar -->
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1">
+            <!-- Ngày Báo Cáo Mặc Định -->
+            <div>
+              <label class="block text-[11px] font-bold text-slate-600 uppercase mb-1">Ngày Báo Cáo Mặc Định:</label>
+              <input type="date" id="importDefaultDate" class="w-full text-xs font-semibold px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500">
+            </div>
+
+            <!-- Dự Án Tiếp Nhận -->
+            <div>
+              <label class="block text-[11px] font-bold text-slate-600 uppercase mb-1">Dự Án / Công Trường:</label>
+              <select id="importProjectSelect" class="w-full text-xs font-semibold px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500">
+                <option value="">-- Theo dữ liệu trong file --</option>
+              </select>
+            </div>
+
+            <!-- Xử Lý Trùng Mã Phiếu -->
+            <div>
+              <label class="block text-[11px] font-bold text-slate-600 uppercase mb-1">Xử Lý Trùng Mã Phiếu:</label>
+              <select id="importDuplicateMode" class="w-full text-xs font-semibold px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500">
+                <option value="update" selected>Cập nhật số liệu nếu trùng mã</option>
+                <option value="skip">Bỏ qua dòng nếu đã tồn tại</option>
+                <option value="generate_new">Tự sinh mã mới không trùng</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end shrink-0 pt-2 md:pt-0">
+            <button type="button" onclick="downloadImportTemplate()" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 shadow-sm transition whitespace-nowrap">
+              <span>📄</span>
+              <span>Tải File Mẫu Chuẩn (.xls)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- File Upload / Dropzone -->
+        <div id="importDropzone" 
+          onclick="document.getElementById('importFileInput').click()"
+          ondragover="handleImportDragOver(event)"
+          ondragleave="handleImportDragLeave(event)"
+          ondrop="handleImportDrop(event)"
+          class="border-2 border-dashed border-blue-300 hover:border-blue-500 rounded-2xl p-6 text-center cursor-pointer transition bg-blue-50/40 hover:bg-blue-50/80 group">
+          <input type="file" id="importFileInput" accept=".xlsx, .xls, .csv" class="hidden" onchange="handleImportFileChange(event)">
+          <div class="flex flex-col items-center justify-center space-y-2">
+            <span class="text-4xl group-hover:scale-110 transition transform">📊</span>
+            <div class="text-sm font-bold text-slate-700">
+              Kéo thả file Excel báo cáo vào đây, hoặc <span class="text-blue-600 underline">bấm để chọn file từ máy</span>
+            </div>
+            <p class="text-xs text-slate-500">
+              Hỗ trợ file xuất báo cáo ngày (.xlsx, .xls) hoặc file mẫu trích xuất vật liệu (như Bao_Cao_Ngay_2026-09-23.xlsx)
+            </p>
+          </div>
+        </div>
+
+        <!-- File & Sheet Indicator -->
+        <div id="importFileInfoCard" class="hidden bg-blue-50 border border-blue-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div class="flex items-center space-x-2">
+            <span class="text-blue-700 font-bold">📄 Tệp đang mở:</span>
+            <span id="importFileName" class="font-mono font-bold text-slate-800"></span>
+            <span id="importFileSize" class="text-slate-500 font-medium"></span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <label class="font-bold text-slate-700">Chọn Sheet:</label>
+            <select id="importSheetSelect" onchange="handleImportSheetSelectChange()" class="font-semibold px-2 py-1 bg-white border border-slate-300 rounded-md">
+            </select>
+          </div>
+        </div>
+
+        <!-- Summary KPIs -->
+        <div id="importStatsContainer" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div class="bg-blue-50/70 p-3 rounded-xl border border-blue-200 text-center">
+            <div class="text-[11px] font-bold text-blue-700 uppercase">Tổng Lượt Xe</div>
+            <div id="importStatTrips" class="text-xl font-bold font-mono text-blue-950">0</div>
+          </div>
+          <div class="bg-emerald-50/70 p-3 rounded-xl border border-emerald-200 text-center">
+            <div class="text-[11px] font-bold text-emerald-700 uppercase">Tổng Khối Lượng</div>
+            <div id="importStatVolume" class="text-xl font-bold font-mono text-emerald-950">0</div>
+          </div>
+          <div class="bg-amber-50/70 p-3 rounded-xl border border-amber-200 text-center">
+            <div class="text-[11px] font-bold text-amber-700 uppercase">Số Lượng Xe</div>
+            <div id="importStatVehicles" class="text-xl font-bold font-mono text-amber-950">0</div>
+          </div>
+          <div class="bg-purple-50/70 p-3 rounded-xl border border-purple-200 text-center">
+            <div class="text-[11px] font-bold text-purple-700 uppercase">Nhà Cung Cấp</div>
+            <div id="importStatSuppliers" class="text-xl font-bold font-mono text-purple-950">0</div>
+          </div>
+        </div>
+
+        <!-- Preview Table -->
+        <div id="importPreviewWrapper" class="hidden space-y-2">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <span>📋</span> Bảng Xem Trước Dữ Liệu (<span id="importPreviewRowCount">0</span> dòng hợp lệ)
+            </h4>
+            <span class="text-[11px] text-slate-500">Kiểm tra thông tin trước khi lưu vào cơ sở dữ liệu</span>
+          </div>
+
+          <div class="max-h-72 overflow-y-auto border border-slate-200 rounded-xl overflow-x-auto shadow-inner bg-slate-50">
+            <table class="w-full text-left text-xs bg-white">
+              <thead class="bg-slate-800 text-white font-semibold sticky top-0 z-10 uppercase tracking-wider">
+                <tr>
+                  <th class="py-2 px-2 text-center w-10">STT</th>
+                  <th class="py-2 px-2.5">Mã Phiếu</th>
+                  <th class="py-2 px-2.5">Dự Án</th>
+                  <th class="py-2 px-2.5">Biển Số Xe</th>
+                  <th class="py-2 px-2.5">Nhà Cung Cấp</th>
+                  <th class="py-2 px-2.5">Vật Liệu</th>
+                  <th class="py-2 px-2 text-center">ĐVT</th>
+                  <th class="py-2 px-2.5 text-center">Giờ Vào</th>
+                  <th class="py-2 px-2.5 text-center">Giờ Ra</th>
+                  <th class="py-2 px-2 text-right">Chuẩn</th>
+                  <th class="py-2 px-2 text-right">Thực Nhận</th>
+                  <th class="py-2 px-2.5">Điều Chỉnh</th>
+                  <th class="py-2 px-2.5">Ghi Chú</th>
+                  <th class="py-2 px-2 text-center">Trạng Thái</th>
+                </tr>
+              </thead>
+              <tbody id="importPreviewTableBody" class="divide-y divide-slate-100 font-medium"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Footer Buttons -->
+      <div class="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between shrink-0">
+        <button type="button" onclick="closeImportExcelModal()" class="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition">
+          Hủy Bỏ
+        </button>
+        <button type="button" id="btnExecuteImport" onclick="executeImportBatch()" disabled
+          class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold shadow-md transition flex items-center space-x-2">
+          <span>🚀</span>
+          <span id="btnExecuteImportText">Tiến Hành Nhập Bổ Sung</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
   <!-- MODAL THÊM / SỬA NHÀ CUNG CẤP -->
   <div id="supplierModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center hidden">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden border border-slate-200">
@@ -1688,7 +1858,8 @@
   <!-- TOAST NOTIFICATION CONTAINER -->
   <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none"></div>
 
-  <script src="app.js"></script>
+  <script src="xlsx.full.min.js?v=2.2"></script>
+  <script src="app.js?v=2.2"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

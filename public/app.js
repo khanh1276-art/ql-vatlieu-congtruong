@@ -3030,7 +3030,6 @@ window.handlePlateInput = handlePlateInput;
 window.selectVehicleSuggestion = selectVehicleSuggestion;
 window.handleCheckinMaterialChange = handleCheckinMaterialChange;
 window.onMaterialChange = handleCheckinMaterialChange;
-window.handleCheckinUnitInput = handleCheckinUnitInput;
 window.calculateGeoVolume = calculateGeoVolume;
 window.calcGeoVolume = calculateGeoVolume;
 window.syncStdVolumeToActual = syncStdVolumeToActual;
@@ -3095,3 +3094,463 @@ window.loadBackupInfo = loadBackupInfo;
 window.downloadJsonBackup = downloadJsonBackup;
 window.downloadDbFile = downloadDbFile;
 window.restoreBackupFromFile = restoreBackupFromFile;
+
+// ============================================================================
+// 12. NHẬP LIỆU BỔ SUNG THEO FILE EXCEL BÁO CÁO NGÀY (IMPORT EXCEL BATCH)
+// ============================================================================
+const ImportState = {
+  workbook: null,
+  activeSheetName: '',
+  parsedItems: [],
+  file: null
+};
+
+function openImportExcelModal() {
+  ImportState.workbook = null;
+  ImportState.activeSheetName = '';
+  ImportState.parsedItems = [];
+  ImportState.file = null;
+
+  const fileInput = document.getElementById('importFileInput');
+  if (fileInput) fileInput.value = '';
+
+  const defaultDateIn = document.getElementById('importDefaultDate');
+  const dailyDateIn = document.getElementById('dailyReportDate');
+  if (defaultDateIn) {
+    defaultDateIn.value = (dailyDateIn && dailyDateIn.value) ? dailyDateIn.value : getTodayDateStr();
+  }
+
+  // Populate projects dropdown
+  const projSelect = document.getElementById('importProjectSelect');
+  if (projSelect) {
+    let optionsHtml = '<option value="">-- Theo dữ liệu trong file --</option>';
+    if (AppState.projects && AppState.projects.length > 0) {
+      AppState.projects.forEach(p => {
+        optionsHtml += `<option value="${p.id}">${escapeHtml(p.name)}</option>`;
+      });
+    }
+    projSelect.innerHTML = optionsHtml;
+    if (AppState.currentUser && AppState.currentUser.role === 'SITE_USER' && AppState.currentUser.project_id) {
+      projSelect.value = String(AppState.currentUser.project_id);
+      projSelect.disabled = true;
+    } else if (AppState.selectedProjectId) {
+      projSelect.value = String(AppState.selectedProjectId);
+    }
+  }
+
+  // Reset UI components
+  const infoCard = document.getElementById('importFileInfoCard');
+  if (infoCard) infoCard.classList.add('hidden');
+
+  const statsContainer = document.getElementById('importStatsContainer');
+  if (statsContainer) statsContainer.classList.add('hidden');
+
+  const previewWrapper = document.getElementById('importPreviewWrapper');
+  if (previewWrapper) previewWrapper.classList.add('hidden');
+
+  const btnExecute = document.getElementById('btnExecuteImport');
+  if (btnExecute) {
+    btnExecute.disabled = true;
+    const btnText = document.getElementById('btnExecuteImportText');
+    if (btnText) btnText.textContent = 'Tiến Hành Nhập Bổ Sung';
+  }
+
+  const modal = document.getElementById('importExcelModal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeImportExcelModal() {
+  const modal = document.getElementById('importExcelModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function downloadImportTemplate() {
+  window.location.href = '/api/reports/download-import-template';
+}
+
+function handleImportDragOver(e) {
+  e.preventDefault();
+  const dz = document.getElementById('importDropzone');
+  if (dz) dz.classList.add('border-blue-600', 'bg-blue-100/60');
+}
+
+function handleImportDragLeave(e) {
+  e.preventDefault();
+  const dz = document.getElementById('importDropzone');
+  if (dz) dz.classList.remove('border-blue-600', 'bg-blue-100/60');
+}
+
+function handleImportDrop(e) {
+  e.preventDefault();
+  const dz = document.getElementById('importDropzone');
+  if (dz) dz.classList.remove('border-blue-600', 'bg-blue-100/60');
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    processImportFile(e.dataTransfer.files[0]);
+  }
+}
+
+function handleImportFileChange(e) {
+  if (e.target && e.target.files && e.target.files.length > 0) {
+    processImportFile(e.target.files[0]);
+  }
+}
+
+function processImportFile(file) {
+  if (!file) return;
+  if (!window.XLSX) {
+    showToast('Thư viện đọc Excel chưa sẵn sàng. Vui lòng tải lại trang.', 'error');
+    return;
+  }
+
+  ImportState.file = file;
+  const fileNameEl = document.getElementById('importFileName');
+  if (fileNameEl) fileNameEl.textContent = file.name;
+
+  const fileSizeEl = document.getElementById('importFileSize');
+  if (fileSizeEl) {
+    const kb = Math.round(file.size / 1024);
+    fileSizeEl.textContent = `(${kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB'})`;
+  }
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+      ImportState.workbook = workbook;
+
+      if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+        throw new Error('Tệp Excel không chứa trang tính (sheet) nào.');
+      }
+
+      // Populate sheet selector
+      const sheetSelect = document.getElementById('importSheetSelect');
+      if (sheetSelect) {
+        sheetSelect.innerHTML = workbook.SheetNames.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+        // Prefer sheet named 'Nhat_Trinh_Ngay' or containing 'Bao_Cao' or 'BC'
+        let preferredSheet = workbook.SheetNames[0];
+        for (const sName of workbook.SheetNames) {
+          const l = sName.toLowerCase();
+          if (l.includes('nhat_trinh') || l.includes('nhat trinh') || l.includes('báo cáo') || l.includes('bao cao')) {
+            preferredSheet = sName;
+            break;
+          }
+        }
+        sheetSelect.value = preferredSheet;
+      }
+
+      const infoCard = document.getElementById('importFileInfoCard');
+      if (infoCard) infoCard.classList.remove('hidden');
+
+      renderImportSheetPreview();
+    } catch (err) {
+      console.error('Lỗi đọc file Excel:', err);
+      showToast('Lỗi đọc tệp Excel: ' + (err.message || err), 'error');
+    }
+  };
+  reader.onerror = function() {
+    showToast('Không thể đọc file đã chọn', 'error');
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function handleImportSheetSelectChange() {
+  renderImportSheetPreview();
+}
+
+function renderImportSheetPreview() {
+  if (!ImportState.workbook) return;
+  const sheetSelect = document.getElementById('importSheetSelect');
+  const sheetName = sheetSelect ? sheetSelect.value : ImportState.workbook.SheetNames[0];
+  ImportState.activeSheetName = sheetName;
+
+  try {
+    const parsed = parseDailyReportSheetClient(ImportState.workbook, sheetName);
+    ImportState.parsedItems = parsed.items;
+
+    // Auto set date if detected
+    if (parsed.detectedDate) {
+      const dateIn = document.getElementById('importDefaultDate');
+      if (dateIn) dateIn.value = parsed.detectedDate;
+    }
+
+    // Render Stats
+    const statsContainer = document.getElementById('importStatsContainer');
+    if (statsContainer) statsContainer.classList.remove('hidden');
+
+    const tripsEl = document.getElementById('importStatTrips');
+    if (tripsEl) tripsEl.textContent = `${parsed.items.length} chuyến`;
+
+    let totalVol = 0;
+    const vehicleSet = new Set();
+    const supplierSet = new Set();
+    parsed.items.forEach(it => {
+      totalVol += (parseFloat(it.actual_volume) || 0);
+      if (it.plate_number) vehicleSet.add(it.plate_number);
+      if (it.supplier_name) supplierSet.add(it.supplier_name);
+    });
+
+    const volEl = document.getElementById('importStatVolume');
+    if (volEl) volEl.textContent = `${totalVol.toFixed(2)} m³`;
+
+    const vehEl = document.getElementById('importStatVehicles');
+    if (vehEl) vehEl.textContent = `${vehicleSet.size} xe`;
+
+    const supEl = document.getElementById('importStatSuppliers');
+    if (supEl) supEl.textContent = `${supplierSet.size} NCC`;
+
+    // Render Preview Table
+    const previewWrapper = document.getElementById('importPreviewWrapper');
+    if (previewWrapper) previewWrapper.classList.remove('hidden');
+
+    const rowCountEl = document.getElementById('importPreviewRowCount');
+    if (rowCountEl) rowCountEl.textContent = parsed.items.length;
+
+    const tbody = document.getElementById('importPreviewTableBody');
+    if (tbody) {
+      if (parsed.items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="14" class="text-center py-6 text-slate-400">Không tìm thấy dữ liệu lượt xe hợp lệ trong trang tính này. Vui lòng kiểm tra lại cấu trúc cột hoặc chọn sheet khác.</td></tr>`;
+      } else {
+        const previewRows = parsed.items.slice(0, 100);
+        tbody.innerHTML = previewRows.map((it, idx) => {
+          const isOut = it.time_out && String(it.time_out).trim() && !String(it.time_out).includes('Đang trong bãi');
+          const statusBadge = isOut
+            ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Hoàn tất</span>`
+            : `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">Trong bãi</span>`;
+
+          const adjustBadge = it.is_manual_adjusted
+            ? `<span class="text-amber-700 font-semibold">${escapeHtml(it.adjustment_reason || 'Có điều chỉnh')}</span>`
+            : `<span class="text-slate-500">${escapeHtml(it.adjustment_reason || 'Đúng chuẩn')}</span>`;
+
+          return `
+            <tr class="hover:bg-blue-50/40 transition">
+              <td class="py-2 px-2 text-center text-slate-500 font-mono text-[11px]">${idx + 1}</td>
+              <td class="py-2 px-2.5 font-mono text-[11px] font-bold text-slate-800">${escapeHtml(it.ticket_code || '-')}</td>
+              <td class="py-2 px-2.5 text-slate-700 truncate max-w-[130px]" title="${escapeHtml(it.project_name || '')}">${escapeHtml(it.project_name || '-')}</td>
+              <td class="py-2 px-2.5 font-mono font-bold text-blue-900">${escapeHtml(it.plate_number)}</td>
+              <td class="py-2 px-2.5 text-slate-700 truncate max-w-[140px]" title="${escapeHtml(it.supplier_name || '')}">${escapeHtml(it.supplier_name || '-')}</td>
+              <td class="py-2 px-2.5 text-slate-700 truncate max-w-[130px]" title="${escapeHtml(it.material_name || '')}">${escapeHtml(it.material_name || '-')}</td>
+              <td class="py-2 px-2 text-center text-slate-600 font-semibold">${escapeHtml(it.unit || 'm³')}</td>
+              <td class="py-2 px-2.5 text-center text-slate-600 font-mono text-[11px]">${escapeHtml(it.time_in || '-')}</td>
+              <td class="py-2 px-2.5 text-center text-slate-600 font-mono text-[11px]">${escapeHtml(it.time_out || '-')}</td>
+              <td class="py-2 px-2 text-right font-mono text-slate-600">${Number(it.standard_volume || 0).toFixed(2)}</td>
+              <td class="py-2 px-2 text-right font-mono font-bold text-emerald-800">${Number(it.actual_volume || 0).toFixed(2)}</td>
+              <td class="py-2 px-2.5 text-xs">${adjustBadge}</td>
+              <td class="py-2 px-2.5 text-slate-500 truncate max-w-[120px]" title="${escapeHtml(it.notes || '')}">${escapeHtml(it.notes || '-')}</td>
+              <td class="py-2 px-2 text-center">${statusBadge}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+    }
+
+    // Enable/disable Import Button
+    const btnExecute = document.getElementById('btnExecuteImport');
+    const btnText = document.getElementById('btnExecuteImportText');
+    if (btnExecute && btnText) {
+      if (parsed.items.length > 0) {
+        btnExecute.disabled = false;
+        btnText.textContent = `Tiến Hành Nhập Bổ Sung (${parsed.items.length} Chuyến)`;
+      } else {
+        btnExecute.disabled = true;
+        btnText.textContent = 'Tiến Hành Nhập Bổ Sung';
+      }
+    }
+
+  } catch (err) {
+    console.error('Lỗi phân tích sheet:', err);
+    showToast(err.message || 'Lỗi đọc sheet', 'error');
+  }
+}
+
+function parseDailyReportSheetClient(wb, sheetName) {
+  const sheet = wb.Sheets[sheetName];
+  if (!sheet) return { items: [], detectedDate: '' };
+
+  const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+  let detectedDate = '';
+
+  // 1. Tìm ngày từ các dòng tiêu đề trên cùng
+  for (let i = 0; i < Math.min(6, rawRows.length); i++) {
+    const rowStr = (rawRows[i] || []).join(' ');
+    const dMatch = rowStr.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2}[\/\.]\d{1,2}[\/\.]\d{4})/);
+    if (dMatch) {
+      if (dMatch[1]) detectedDate = dMatch[1];
+      else if (dMatch[2]) {
+        const parts = dMatch[2].split(/[\/\.]/);
+        detectedDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+      break;
+    }
+  }
+
+  // 2. Tìm dòng Header cột
+  let headerIndex = -1;
+  for (let i = 0; i < Math.min(15, rawRows.length); i++) {
+    const row = rawRows[i];
+    if (!row) continue;
+    const rowStr = row.map(c => String(c || '').trim().toLowerCase()).join(' | ');
+    if (rowStr.includes('biển số') || rowStr.includes('bien so') || rowStr.includes('mã phiếu') || rowStr.includes('số xe')) {
+      headerIndex = i;
+      break;
+    }
+  }
+
+  if (headerIndex === -1) {
+    throw new Error(`Sheet "${sheetName}" không tìm thấy dòng tiêu đề cột nhận diện (Biển số xe, Mã phiếu...).`);
+  }
+
+  const headerRow = rawRows[headerIndex].map(c => String(c || '').trim());
+  const colMap = {
+    stt: -1, ticket_code: -1, project_name: -1, plate_number: -1,
+    supplier_name: -1, material_name: -1, unit: -1,
+    time_in: -1, time_out: -1, dimensions: -1,
+    standard_volume: -1, actual_volume: -1, adjustment_reason: -1, notes: -1
+  };
+
+  headerRow.forEach((col, idx) => {
+    const lower = col.toLowerCase();
+    if (lower === 'stt' || lower.includes('thứ tự')) colMap.stt = idx;
+    else if (lower.includes('mã phiếu') || lower.includes('ma phieu') || lower.includes('mã ticket')) colMap.ticket_code = idx;
+    else if (lower.includes('dự án') || lower.includes('du an') || lower.includes('công trường')) colMap.project_name = idx;
+    else if (lower.includes('biển số') || lower.includes('bien so') || lower.includes('số xe')) colMap.plate_number = idx;
+    else if (lower.includes('nhà cung cấp') || lower.includes('đơn vị cung cấp') || lower.includes('nhà thầu') || lower.includes('nha cung cap')) colMap.supplier_name = idx;
+    else if (lower.includes('loại vật liệu') || lower.includes('vật liệu') || lower.includes('vat lieu')) colMap.material_name = idx;
+    else if (lower === 'đvt' || lower === 'dvt' || lower.includes('đơn vị')) colMap.unit = idx;
+    else if (lower.includes('giờ vào') || lower.includes('gio vao') || lower.includes('thời gian vào')) colMap.time_in = idx;
+    else if (lower.includes('giờ ra') || lower.includes('gio ra') || lower.includes('thời gian ra')) colMap.time_out = idx;
+    else if (lower.includes('kích thước') || lower.includes('kich thuoc') || lower.includes('quy cách')) colMap.dimensions = idx;
+    else if (lower.includes('quy chuẩn') || lower.includes('quy chuan') || lower.includes('chuẩn')) colMap.standard_volume = idx;
+    else if (lower.includes('thực nhận') || lower.includes('thuc nhan') || lower.includes('khối lượng') || lower.includes('nghiệm thu')) {
+      if (colMap.actual_volume === -1) colMap.actual_volume = idx;
+    }
+    else if (lower.includes('điều chỉnh') || lower.includes('dieu chinh') || lower.includes('lý do')) colMap.adjustment_reason = idx;
+    else if (lower.includes('ghi chú') || lower.includes('ghi chu')) colMap.notes = idx;
+  });
+
+  const parsedItems = [];
+  for (let i = headerIndex + 1; i < rawRows.length; i++) {
+    const row = rawRows[i];
+    if (!row || row.length === 0) continue;
+
+    const firstCell = String(row[0] || '').trim();
+    if (firstCell.toUpperCase().startsWith('TỔNG') || firstCell.toUpperCase().startsWith('TONG')) continue;
+
+    const plate = colMap.plate_number !== -1 ? String(row[colMap.plate_number] || '').trim().toUpperCase() : '';
+    if (!plate || plate.length < 3) continue;
+
+    const ticketCode = colMap.ticket_code !== -1 ? String(row[colMap.ticket_code] || '').trim() : '';
+    const projectName = colMap.project_name !== -1 ? String(row[colMap.project_name] || '').trim() : '';
+    const supplierName = colMap.supplier_name !== -1 ? String(row[colMap.supplier_name] || '').trim() : '';
+    const materialName = colMap.material_name !== -1 ? String(row[colMap.material_name] || '').trim() : '';
+    const unit = colMap.unit !== -1 ? String(row[colMap.unit] || '').trim() : 'm³';
+    const timeIn = colMap.time_in !== -1 ? String(row[colMap.time_in] || '').trim() : '';
+    const timeOut = colMap.time_out !== -1 ? String(row[colMap.time_out] || '').trim() : '';
+    const dimensions = colMap.dimensions !== -1 ? String(row[colMap.dimensions] || '').trim() : '';
+
+    let stdVol = 0;
+    if (colMap.standard_volume !== -1 && row[colMap.standard_volume] !== undefined) {
+      stdVol = parseFloat(String(row[colMap.standard_volume]).replace(/,/g, '')) || 0;
+    }
+
+    let actVol = stdVol;
+    if (colMap.actual_volume !== -1 && row[colMap.actual_volume] !== undefined) {
+      const parsedAct = parseFloat(String(row[colMap.actual_volume]).replace(/,/g, ''));
+      if (!isNaN(parsedAct) && parsedAct > 0) actVol = parsedAct;
+    }
+    if (stdVol <= 0 && actVol > 0) stdVol = actVol;
+
+    const adjustReason = colMap.adjustment_reason !== -1 ? String(row[colMap.adjustment_reason] || '').trim() : '';
+    const notes = colMap.notes !== -1 ? String(row[colMap.notes] || '').trim() : '';
+
+    const isManualAdjusted = (adjustReason && !adjustReason.toLowerCase().includes('đúng quy chuẩn') && !adjustReason.toLowerCase().includes('dung quy chuan')) || Math.abs(actVol - stdVol) > 0.001 ? 1 : 0;
+
+    parsedItems.push({
+      stt: parsedItems.length + 1,
+      ticket_code: ticketCode,
+      project_name: projectName,
+      plate_number: plate,
+      supplier_name: supplierName,
+      material_name: materialName,
+      unit: unit || 'm³',
+      time_in: timeIn,
+      time_out: timeOut,
+      dimensions: dimensions,
+      standard_volume: stdVol,
+      actual_volume: actVol,
+      is_manual_adjusted: isManualAdjusted,
+      adjustment_reason: adjustReason,
+      notes: notes
+    });
+  }
+
+  return { items: parsedItems, detectedDate };
+}
+
+async function executeImportBatch() {
+  if (!ImportState.parsedItems || ImportState.parsedItems.length === 0) {
+    showToast('Chưa có dữ liệu nào để nhập', 'warning');
+    return;
+  }
+
+  const defaultDate = document.getElementById('importDefaultDate')?.value || getTodayDateStr();
+  const projectId = document.getElementById('importProjectSelect')?.value || null;
+  const duplicateMode = document.getElementById('importDuplicateMode')?.value || 'update';
+
+  const btnExecute = document.getElementById('btnExecuteImport');
+  const btnText = document.getElementById('btnExecuteImportText');
+
+  if (!confirm(`Xác nhận nhập bổ sung ${ImportState.parsedItems.length} chuyến xe vào hệ thống?`)) {
+    return;
+  }
+
+  if (btnExecute) btnExecute.disabled = true;
+  if (btnText) btnText.textContent = 'Đang xử lý nhập dữ liệu...';
+
+  try {
+    const res = await apiFetch('/api/tickets/import-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tickets: ImportState.parsedItems,
+        default_date: defaultDate,
+        project_id: projectId ? parseInt(projectId, 10) : null,
+        duplicate_mode: duplicateMode
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi khi nhập dữ liệu');
+
+    showToast(`✓ ${data.message}`, 'success');
+    closeImportExcelModal();
+
+    // Refresh application state & reports
+    await Promise.all([
+      loadInYardTickets(),
+      loadDailyReport(),
+      loadProjects(),
+      loadSuppliers(),
+      loadMaterials(),
+      loadVehicles()
+    ]);
+
+  } catch (err) {
+    console.error('Lỗi thực hiện nhập bổ sung:', err);
+    showToast(err.message || 'Lỗi nhập bổ sung', 'error');
+  } finally {
+    if (btnExecute) btnExecute.disabled = false;
+    if (btnText) btnText.textContent = `Tiến Hành Nhập Bổ Sung (${ImportState.parsedItems.length} Chuyến)`;
+  }
+}
+
+// Gắn các hàm import ra global window
+window.openImportExcelModal = openImportExcelModal;
+window.closeImportExcelModal = closeImportExcelModal;
+window.downloadImportTemplate = downloadImportTemplate;
+window.handleImportDragOver = handleImportDragOver;
+window.handleImportDragLeave = handleImportDragLeave;
+window.handleImportDrop = handleImportDrop;
+window.handleImportFileChange = handleImportFileChange;
+window.handleImportSheetSelectChange = handleImportSheetSelectChange;
+window.executeImportBatch = executeImportBatch;
