@@ -14,11 +14,13 @@ if (!fs.existsSync(DATA_DIR)) {
 const DB_PATH = path.join(DATA_DIR, 'inventory.db');
 const db = new DatabaseSync(DB_PATH);
 
-// Tối ưu hóa hiệu năng với WAL mode
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-`);
+try {
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
+  db.exec('PRAGMA journal_mode = WAL;');
+} catch (e) {
+  console.warn('[DB] Pragma notice:', e.message);
+}
 
 // Hàm băm mật khẩu an toàn bằng SHA256 kèm muối cố định
 function hashPassword(password) {

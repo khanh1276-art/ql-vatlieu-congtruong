@@ -6,6 +6,14 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] unhandledRejection:', reason);
+});
+
 const { db, hashPassword, verifyPassword } = require('./db.js');
 
 const PORT = process.env.PORT || 3000;
