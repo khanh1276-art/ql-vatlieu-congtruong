@@ -46,6 +46,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initDates();
   checkAuth();
 
+  // Tự động điền tên đăng nhập nếu đã lưu
+  const remembered = localStorage.getItem('remembered_username');
+  const uInput = document.getElementById('loginUsername');
+  if (remembered && uInput && !uInput.value) {
+    uInput.value = remembered;
+  }
+
   // Tự động làm mới xe trong bãi mỗi 20 giây nếu đang ở tab vào/ra hoặc dashboard
   setInterval(() => {
     if (AppState.currentUser && (AppState.currentTab === 'checkin' || AppState.currentTab === 'dashboard')) {
@@ -173,6 +180,14 @@ async function handleLogin(e) {
       throw new Error(data.error || 'Đăng nhập không thành công');
     }
 
+    // Ghi nhớ tên đăng nhập nếu chọn Remember Me
+    const rememberCheckbox = document.getElementById('rememberMe');
+    if (rememberCheckbox && rememberCheckbox.checked) {
+      localStorage.setItem('remembered_username', username);
+    } else if (rememberCheckbox && !rememberCheckbox.checked) {
+      localStorage.removeItem('remembered_username');
+    }
+
     onLoginSuccess(data.user, data.token, true);
   } catch (err) {
     clearTimeout(timeoutId);
@@ -187,9 +202,30 @@ async function handleLogin(e) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = '<span>ĐĂNG NHẬP HỆ THỐNG</span>';
+      btn.innerHTML = '<span>Đăng nhập</span>';
     }
   }
+}
+
+function togglePasswordVisibility() {
+  const pInput = document.getElementById('loginPassword');
+  const eyeIcon = document.getElementById('eyeIcon');
+  if (!pInput) return;
+  if (pInput.type === 'password') {
+    pInput.type = 'text';
+    if (eyeIcon) {
+      eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />`;
+    }
+  } else {
+    pInput.type = 'password';
+    if (eyeIcon) {
+      eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />`;
+    }
+  }
+}
+
+function openForgotPasswordHelp() {
+  alert('Để cấp lại hoặc đổi mật khẩu, vui lòng liên hệ Quản Trị Viên Hệ Thống FECON hoặc cán bộ quản lý dự án.');
 }
 
 function quickFillLogin(username, password) {

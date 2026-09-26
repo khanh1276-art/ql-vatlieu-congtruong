@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Quản Lý Xuất Nhập Kho Vật Liệu Xây Dựng Công Trường</title>
+  <title>FECON - Quản Lý Vật Tư Công Trường</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Chart.js CDN -->
@@ -15,9 +15,9 @@
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png">
   <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png">
-  <meta name="application-name" content="Kho Vật Liệu">
-  <meta name="apple-mobile-web-app-title" content="Kho Vật Liệu">
-  <meta name="theme-color" content="#0f172a">
+  <meta name="application-name" content="FECON QLVT">
+  <meta name="apple-mobile-web-app-title" content="FECON QLVT">
+  <meta name="theme-color" content="#063580">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -45,51 +45,119 @@
 <body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col">
 
   <!-- ==================== MÀN HÌNH ĐĂNG NHẬP (LOGIN OVERLAY) ==================== -->
-  <div id="loginOverlay" class="fixed inset-0 bg-slate-950/90 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200">
-      <!-- Header card -->
-      <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white p-6 text-center">
-        <div class="w-14 h-14 mx-auto rounded-2xl bg-white/10 flex items-center justify-center text-3xl mb-3 shadow-inner">
-          🏗️
+  <div id="loginOverlay" class="fixed inset-0 z-50 flex flex-col lg:flex-row bg-[#063580] overflow-y-auto">
+    <!-- CỘT TRÁI: HÌNH ẢNH CÔNG TRÌNH XÂY DỰNG FECON (ẨN TRÊN MOBILE, HIỆN TRÊN DESKTOP/TABLET) -->
+    <div class="hidden lg:flex lg:w-1/2 relative bg-[#063580] items-center justify-center overflow-hidden min-h-screen">
+      <div class="absolute inset-0 bg-cover bg-center bg-no-repeat" style="background-image: url('login-building-bg.jpg');"></div>
+      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-[#063580]/40 pointer-events-none"></div>
+    </div>
+
+    <!-- CỘT PHẢI: FORM ĐĂNG NHẬP VỚI NỀN XANH DƯƠNG #063580 & CARD TRẮNG Ở GIỮA -->
+    <div class="w-full lg:w-1/2 min-h-screen flex flex-col justify-between items-center px-4 py-8 sm:px-8 sm:py-10 bg-[#063580] relative z-10">
+      <div class="w-full max-w-md my-auto">
+        <!-- CARD ĐĂNG NHẬP TRẮNG CHÍNH -->
+        <div class="bg-white rounded-3xl shadow-2xl p-6 sm:p-9 border border-slate-100">
+          <!-- LOGO FECON QUẢN LÝ VẬT TƯ -->
+          <div class="text-center mb-6">
+            <img src="fecon-logo.png" alt="FECON QUẢN LÝ VẬT TƯ" class="h-14 sm:h-16 mx-auto object-contain drop-shadow-sm">
+          </div>
+
+          <!-- THÔNG BÁO LỖI -->
+          <div id="loginError" class="p-3 bg-red-50 text-red-700 text-xs font-semibold rounded-xl border border-red-200 hidden mb-4"></div>
+
+          <!-- FORM NHẬP LIỆU -->
+          <form id="loginForm" onsubmit="handleLogin(event)" class="space-y-4">
+            <!-- FIELD: USERNAME/EMAIL -->
+            <div>
+              <label for="loginUsername" class="block text-xs font-semibold text-slate-600 mb-1.5">
+                Username/Email
+              </label>
+              <input type="text" id="loginUsername" required placeholder="khanhtd"
+                autocomplete="username" autocorrect="off" autocapitalize="none" spellcheck="false" inputmode="text"
+                class="w-full text-sm font-semibold px-4 py-3 bg-[#EDF2F9] border border-[#E2E8F0] rounded-xl focus:bg-white focus:border-[#063580] focus:ring-2 focus:ring-[#063580]/20 focus:outline-none transition">
+            </div>
+
+            <!-- FIELD: PASSWORD -->
+            <div>
+              <label for="loginPassword" class="block text-xs font-semibold text-slate-600 mb-1.5">
+                Password
+              </label>
+              <div class="relative">
+                <input type="password" id="loginPassword" required placeholder="••••••"
+                  autocomplete="current-password" autocorrect="off" autocapitalize="none" spellcheck="false"
+                  class="w-full text-sm font-semibold px-4 py-3 pr-11 bg-[#EDF2F9] border border-[#E2E8F0] rounded-xl focus:bg-white focus:border-[#063580] focus:ring-2 focus:ring-[#063580]/20 focus:outline-none transition">
+                <button type="button" onclick="togglePasswordVisibility()" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 focus:outline-none" title="Hiện/ẩn mật khẩu">
+                  <svg id="eyeIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- OPTIONS: REMEMBER ME & FORGOT PASSWORD -->
+            <div class="flex items-center justify-between text-xs pt-0.5">
+              <label class="flex items-center cursor-pointer select-none text-slate-600">
+                <input type="checkbox" id="rememberMe" checked class="w-4 h-4 rounded text-[#063580] border-slate-300 focus:ring-0 focus:ring-offset-0 mr-2">
+                <span>Remember Me</span>
+              </label>
+              <a href="javascript:void(0)" onclick="openForgotPasswordHelp()" class="text-[#063580] font-semibold hover:underline">
+                Forgot Password?
+              </a>
+            </div>
+
+            <!-- NÚT ĐĂNG NHẬP MÀU CAM FECON -->
+            <button type="submit" id="btnLoginSubmit"
+              class="w-full py-3.5 bg-[#E9580C] hover:bg-[#D94F0A] active:bg-[#C24306] text-white font-bold rounded-xl shadow-lg shadow-orange-500/25 transition duration-150 flex items-center justify-center space-x-2 text-sm tracking-wide">
+              <span>Đăng nhập</span>
+            </button>
+          </form>
+
+          <!-- TÙY CHỌN TẢI FILE APK CHO ANDROID -->
+          <div class="mt-5 pt-4 border-t border-slate-100">
+            <div class="flex items-center justify-between bg-slate-50 hover:bg-slate-100 p-3 rounded-2xl border border-slate-200/80 transition">
+              <div class="flex items-center space-x-2.5">
+                <div class="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-xl font-bold flex-shrink-0">
+                  🤖
+                </div>
+                <div class="text-left">
+                  <div class="text-xs font-bold text-slate-800">Cài đặt App Android</div>
+                  <div class="text-[11px] text-slate-500 font-medium">Bản cài APK trực tiếp (v1.2.7)</div>
+                </div>
+              </div>
+              <a href="/downloads/FECON-QLVT-v1.2.7.apk" download="FECON-QLVT-v1.2.7.apk"
+                class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition flex items-center space-x-1">
+                <span>📥 Tải APK</span>
+              </a>
+            </div>
+          </div>
+
+          <!-- DANH MỤC TÀI KHOẢN MẪU (DEMO) -->
+          <details class="mt-3.5 text-xs text-slate-500 group">
+            <summary class="cursor-pointer hover:text-slate-700 font-medium list-none flex items-center justify-center space-x-1 py-1">
+              <span>ⓘ Danh mục tài khoản mẫu (Demo)</span>
+              <span class="transition-transform group-open:rotate-180">▾</span>
+            </summary>
+            <div class="mt-2 grid grid-cols-3 gap-1.5 pt-2 border-t border-slate-100 text-center">
+              <button type="button" onclick="quickFillLogin('admin', 'admin123')" class="px-2 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-lg text-[11px] font-semibold transition border border-slate-200">
+                👑 Admin
+              </button>
+              <button type="button" onclick="quickFillLogin('hoayen', 'hoayen123')" class="px-2 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-lg text-[11px] font-semibold transition border border-slate-200">
+                🏗️ Hòa Yên
+              </button>
+              <button type="button" onclick="quickFillLogin('silverlake', 'silver123')" class="px-2 py-1.5 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-lg text-[11px] font-semibold transition border border-slate-200">
+                🏢 Silverlake
+              </button>
+            </div>
+          </details>
         </div>
-        <h2 class="text-xl font-extrabold tracking-tight">HỆ THỐNG QUẢN LÝ KHO VẬT LIỆU</h2>
-        <p class="text-xs text-blue-200 mt-1">Đăng nhập phân quyền theo công trường & văn phòng</p>
+
+        <!-- FOOTER DƯỚI CARD -->
+        <div class="text-center mt-6 text-xs text-blue-200/80 font-medium flex items-center justify-center space-x-1.5">
+          <span>🛡️</span>
+          <span>FECON CRM • Executive Portal</span>
+        </div>
       </div>
-
-      <!-- Form login -->
-      <form id="loginForm" onsubmit="handleLogin(event)" class="p-6 space-y-4">
-        <div id="loginError" class="p-3 bg-red-50 text-red-700 text-xs font-semibold rounded-xl border border-red-200 hidden"></div>
-
-        <div>
-          <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-            Tên Đăng Nhập
-          </label>
-          <input type="text" id="loginUsername" required placeholder="Nhập tên tài khoản..."
-            autocomplete="username" autocorrect="off" autocapitalize="none" spellcheck="false" inputmode="text"
-            class="w-full text-sm font-semibold px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:border-blue-600 focus:outline-none">
-        </div>
-
-        <div>
-          <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-            Mật Khẩu
-          </label>
-          <input type="password" id="loginPassword" required placeholder="••••••••"
-            autocomplete="current-password" autocorrect="off" autocapitalize="none" spellcheck="false"
-            class="w-full text-sm px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:border-blue-600 focus:outline-none">
-        </div>
-
-        <button type="submit" id="btnLoginSubmit"
-          class="w-full py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center space-x-2 text-sm">
-          <span>ĐĂNG NHẬP HỆ THỐNG</span>
-        </button>
-
-        <div class="pt-3 border-t border-slate-100 text-center">
-          <a href="/downloads/KhoVatLieu-v1.2.4.apk" download="KhoVatLieu-v1.2.4.apk"
-            class="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold rounded-xl text-xs border border-emerald-300 shadow-sm transition">
-            <span>📱</span> <span>Tải App Android Cài Đặt (APK v1.2.4)</span>
-          </a>
-        </div>
-      </form>
     </div>
   </div>
 
@@ -99,12 +167,15 @@
       <div class="flex items-center justify-between h-16">
         <!-- Logo & Title -->
         <div class="flex items-center space-x-3">
-          <div class="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center shadow-md font-bold text-xl">
-            🏗️
+          <div class="h-10 px-2.5 py-1 rounded-xl bg-white flex items-center justify-center shadow-md flex-shrink-0">
+            <img src="fecon-badge.png" alt="FECON" class="h-7 w-auto object-contain">
           </div>
           <div>
-            <h1 class="text-lg font-bold tracking-tight text-white leading-tight">QUẢN LÝ VẬT LIỆU CÔNG TRƯỜNG</h1>
-            <p class="text-xs text-slate-400 font-medium">Đa Dự Án • Khóa Số Liệu Qua Ngày • Phân Quyền Bảo Mật</p>
+            <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-white leading-tight flex items-center gap-2">
+              <span>FECON QUẢN LÝ VẬT TƯ</span>
+              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.2.7</span>
+            </h1>
+            <p class="text-[11px] sm:text-xs text-slate-400 font-medium">Kiểm Soát Nhập Xuất • Đa Dự Án • Khóa Sổ Ngày</p>
           </div>
         </div>
 
@@ -124,7 +195,7 @@
           </div>
 
           <!-- Nút tải App Android APK trực tiếp -->
-          <a href="/downloads/KhoVatLieu-v1.2.4.apk" download="KhoVatLieu-v1.2.4.apk" title="Tải file cài đặt APK cho điện thoại Android"
+          <a href="/downloads/FECON-QLVT-v1.2.7.apk" download="FECON-QLVT-v1.2.7.apk" title="Tải file cài đặt APK cho điện thoại Android"
             class="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold border border-emerald-500 shadow-sm transition">
             <span>📱</span>
             <span>App Android</span>
@@ -1145,7 +1216,7 @@
 
   <!-- ==================== FOOTER ==================== -->
   <footer class="bg-white border-t border-slate-200 py-3 text-center text-xs text-slate-500 no-print">
-    Phần mềm Xuất Nhập Kho Vật Liệu Xây Dựng • Bản quyền &copy; 2026
+    FECON • Hệ Thống Quản Lý Vật Tư Công Trường • Bản quyền &copy; 2026
   </footer>
 
   <!-- ==================== MODALS ==================== -->
