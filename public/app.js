@@ -173,13 +173,6 @@ async function handleLogin(e) {
       throw new Error(data.error || 'Đăng nhập không thành công');
     }
 
-    const rememberMe = document.getElementById('loginRememberMe')?.checked;
-    if (rememberMe) {
-      localStorage.setItem('saved_username', username);
-    } else {
-      localStorage.removeItem('saved_username');
-    }
-
     onLoginSuccess(data.user, data.token, true);
   } catch (err) {
     clearTimeout(timeoutId);
@@ -194,13 +187,9 @@ async function handleLogin(e) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = '<span>ĐĂNG NHẬP</span>';
+      btn.innerHTML = '<span>ĐĂNG NHẬP HỆ THỐNG</span>';
     }
   }
-}
-
-function openForgotPasswordHelp() {
-  alert('Quên mật khẩu?\n\nVui lòng liên hệ Quản trị viên hệ thống (Admin) hoặc Ban chỉ huy công trường FECON để được cấp lại hoặc khôi phục mật khẩu.');
 }
 
 function quickFillLogin(username, password) {
@@ -259,14 +248,6 @@ function handleUnauthorized() {
 
   const form = document.getElementById('loginForm');
   if (form) form.reset();
-
-  const savedUser = localStorage.getItem('saved_username');
-  if (savedUser) {
-    const uInput = document.getElementById('loginUsername');
-    const rCheck = document.getElementById('loginRememberMe');
-    if (uInput) uInput.value = savedUser;
-    if (rCheck) rCheck.checked = true;
-  }
 
   const errorDiv = document.getElementById('loginError');
   if (errorDiv) errorDiv.classList.add('hidden');
@@ -3573,4 +3554,3 @@ window.handleImportDrop = handleImportDrop;
 window.handleImportFileChange = handleImportFileChange;
 window.handleImportSheetSelectChange = handleImportSheetSelectChange;
 window.executeImportBatch = executeImportBatch;
-window.openForgotPasswordHelp = openForgotPasswordHelp;
