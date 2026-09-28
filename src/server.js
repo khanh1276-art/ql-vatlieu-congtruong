@@ -124,10 +124,10 @@ function generateTicketCode(customDateOrString = null) {
 }
 
 // Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Cục Đăng Kiểm
+// Quy chuẩn ô tô: [Mã tỉnh: đúng 2 số 11-99][Sê-ri: 1-2 chữ cái]-[Dãy số: xxx.xx hoặc xxxx]
 function cleanAndNormalizePlateText(text) {
   if (!text) return null;
   const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
-  const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
 
   const fixDigits = (s) => (s || '')
     .replace(/[ODQ]/g, '0')
@@ -140,24 +140,40 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[T]/g, '7')
     .replace(/[B]/g, '8');
 
-  // PASS 1: Biển vuông 2 dòng
-  if (rawLines.length >= 2) {
-    for (let i = 0; i < rawLines.length - 1; i++) {
-      const line1 = rawLines[i];
-      const line2 = rawLines[i + 1];
-      const m1 = line1.match(/^([1-9][0-9])([A-Z]{1,2}|[A-Z][0-9])[-.]?$/);
-      if (m1) {
-        const prov = m1[1];
-        const ser = m1[2];
+  // Matcher prefix xe ô tô Việt Nam:
+  // Luôn là 2 CHỮ SỐ MÃ TỈNH (11-99) ngay trước CHỮ CÁI SÊ-RI (A-Z)
+  // Bỏ qua mọi số/ký tự rác phía trước (như '351H', '151H', '029C', '.51H')
+  const prefixRegex = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])(?![A-Z])/;
 
-        const mDot = line2.match(/([0-9]{3})\.([0-9]{2})$/);
-        if (mDot) return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
+  // Tách dòng
+  const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
 
-        const digitsOnly = line2.replace(/[^0-9]/g, '');
+  // PASS 1: Quét trên các dòng riêng biệt (Biển vuông 2 dòng)
+  for (let i = 0; i < rawLines.length; i++) {
+    const l1 = rawLines[i];
+    const mPref = l1.match(prefixRegex);
+    if (mPref) {
+      const prov = mPref[1];
+      const ser = mPref[2];
+
+      // Tìm số ở các dòng tiếp theo
+      for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
+        const l2 = rawLines[j];
+
+        // 1.1: Dòng 2 có 5 số có chấm: '919.91', '1919.91', '|919.91'
+        const mDot = l2.match(/([0-9]{3})\.([0-9]{2})(?![0-9])/);
+        if (mDot) {
+          return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
+        }
+
+        // 1.2: Dòng 2 là dãy số liền (nếu dính viền 6 số như 191991, lấy đúng 5 số cuối):
+        const digitsOnly = l2.replace(/[^0-9]/g, '');
         if (digitsOnly.length >= 5) {
           const last5 = digitsOnly.slice(-5);
           return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
         }
+
+        // 1.3: Biển 4 số cũ: đúng 4 số
         if (digitsOnly.length === 4) {
           return `${prov}${ser}-${digitsOnly}`;
         }
@@ -165,54 +181,60 @@ function cleanAndNormalizePlateText(text) {
     }
   }
 
-  // PASS 2: Biển 1 dòng
+  // PASS 2: Quét trên toàn bộ văn bản gộp (Biển 1 dòng)
   const flat = clean.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const r5Dot = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})\b/;
-  let m = flat.match(r5Dot);
-  if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
 
-  const r5Plain = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})([0-9]{2})(?![0-9])\b/;
-  m = flat.match(r5Plain);
-  if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
+  // 2.1: Biển 5 số có chấm: VD '51H-919.91', '351H-919.91', '29C-881.23'
+  const rFlat5Dot = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})(?![0-9])/;
+  let mf = flat.match(rFlat5Dot);
+  if (mf) return `${mf[1]}${mf[2]}-${mf[3]}.${mf[4]}`;
 
-  const r4 = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{4})(?![0-9.])\b/;
-  m = flat.match(r4);
-  if (m) return `${m[1]}${m[2]}-${m[3]}`;
+  // 2.2: Biển 5 số liền: VD '51H 91991', '351H 91991', '51H 191991'
+  const rFlat5Plain = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*(?:[0-9]*?)([0-9]{3})([0-9]{2})(?![0-9])/;
+  mf = flat.match(rFlat5Plain);
+  if (mf) return `${mf[1]}${mf[2]}-${mf[3]}.${mf[4]}`;
 
-  // PASS 3: Fallback sửa sai lệch ký tự
-  if (rawLines.length >= 2) {
-    for (let i = 0; i < rawLines.length - 1; i++) {
-      let l1 = rawLines[i];
-      let l2 = rawLines[i + 1];
-      let m1 = l1.match(/^([0-9A-Z]{2})([A-Z0-9]{1,2})[-.]?$/);
-      if (m1) {
-        const prov = fixDigits(m1[1]);
-        let ser = m1[2];
-        if (/^[0-9]+$/.test(ser)) continue;
+  // 2.3: Biển 4 số: VD '30H-9999', '29C 8888'
+  const rFlat4 = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*([0-9]{4})(?![0-9.])/;
+  mf = flat.match(rFlat4);
+  if (mf) return `${mf[1]}${mf[2]}-${mf[3]}`;
 
+  // PASS 3: Fallback sửa lỗi ký tự OCR tương đồng
+  for (let i = 0; i < rawLines.length; i++) {
+    let l1 = rawLines[i];
+    let m1 = l1.match(/([0-9A-Z]{2})\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])(?![A-Z0-9])/);
+    if (m1) {
+      const prov = fixDigits(m1[1]);
+      let ser = m1[2];
+      if (/^[0-9]+$/.test(ser)) continue;
+      if (!/^[1-9][0-9]$/.test(prov)) continue;
+
+      for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
+        let l2 = rawLines[j];
         const l2Digits = fixDigits(l2).replace(/[^0-9]/g, '');
-        const mDot2 = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})$/);
-        if (mDot2 && /^[1-9][0-9]$/.test(prov)) {
+        const mDot2 = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})/);
+        if (mDot2) {
           return `${prov}${ser}-${fixDigits(mDot2[1])}.${fixDigits(mDot2[2])}`;
         }
-        if (l2Digits.length >= 5 && /^[1-9][0-9]$/.test(prov)) {
+        if (l2Digits.length >= 5) {
           const last5 = l2Digits.slice(-5);
           return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
         }
-        if (l2Digits.length === 4 && /^[1-9][0-9]$/.test(prov)) {
+        if (l2Digits.length === 4) {
           return `${prov}${ser}-${l2Digits}`;
         }
       }
     }
   }
 
-  const flatPerm = /\b([0-9A-Z]{2})\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9A-Z]{3})\s*[-.]?\s*([0-9A-Z]{2})\b/;
-  m = flat.match(flatPerm);
-  if (m) {
-    const prov = fixDigits(m[1]);
-    const ser = m[2];
-    const num = fixDigits(m[3]) + '.' + fixDigits(m[4]);
-    if (/^[1-9][0-9]$/.test(prov)) {
+  // 3.2: Biển 1 dòng có sai lệch ký tự
+  const flatPerm = /([0-9A-Z]{2})\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*([0-9A-Z]{3})\s*[-.]?\s*([0-9A-Z]{2})(?![0-9A-Z])/;
+  mf = flat.match(flatPerm);
+  if (mf) {
+    const prov = fixDigits(mf[1]);
+    const ser = mf[2];
+    const num = fixDigits(mf[3]) + '.' + fixDigits(mf[4]);
+    if (/^[1-9][0-9]$/.test(prov) && !/^[0-9]+$/.test(ser)) {
       return `${prov}${ser}-${num}`;
     }
   }
