@@ -3653,6 +3653,7 @@ const ScannerState = {
   stream: null,
   facingMode: 'environment', // 'environment' (sau) hoặc 'user' (trước)
   plateMode: localStorage.getItem('fecon_plate_mode') || 'square', // 'square' (biển vuông 330x165) hoặc 'long' (biển dài 520x110)
+  zoomLevel: 1.0, // Mức phóng đại camera hiện tại (1.0x -> 4.0x)
   capturedDataUrl: null,
   recognizedPlate: null,
   recognitionMethod: null, // 'gemini' hoặc 'tesseract'
@@ -4427,7 +4428,11 @@ function stopScannerCamera() {
     ScannerState.stream = null;
   }
   const video = document.getElementById('scannerVideo');
-  if (video) video.srcObject = null;
+  if (video) {
+    video.srcObject = null;
+    video.style.transform = 'scale(1)';
+  }
+  ScannerState.zoomLevel = 1.0;
 }
 
 // Đổi camera Trước / Sau
@@ -4435,6 +4440,97 @@ async function switchCameraFacing() {
   ScannerState.facingMode = ScannerState.facingMode === 'environment' ? 'user' : 'environment';
   showToast(`Chuyển sang camera ${ScannerState.facingMode === 'environment' ? 'sau' : 'trước'}`, 'info');
   await startScannerCamera();
+}
+
+// Điều chỉnh mức độ Zoom Camera (Hỗ trợ cả Hardware Zoom của Camera và Hybrid Digital Scale)
+async function setScannerZoom(level, isRelative = false) {
+  let targetZoom = isRelative ? (ScannerState.zoomLevel + level) : level;
+  targetZoom = Math.max(1.0, Math.min(4.0, Math.round(targetZoom * 10) / 10));
+  ScannerState.zoomLevel = targetZoom;
+
+  const video = document.getElementById('scannerVideo');
+  if (video) {
+    video.style.transformOrigin = 'center center';
+    video.style.transform = `scale(${targetZoom})`;
+  }
+
+  // Cố gắng áp dụng Hardware Zoom thông qua MediaStreamTrack nếu thiết bị hỗ trợ
+  if (ScannerState.stream) {
+    const track = ScannerState.stream.getVideoTracks()[0];
+    if (track) {
+      try {
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        if (capabilities.zoom) {
+          const hwMin = capabilities.zoom.min || 1;
+          const hwMax = capabilities.zoom.max || 1;
+          const hwZoom = Math.min(hwMax, Math.max(hwMin, targetZoom));
+          await track.applyConstraints({
+            advanced: [{ zoom: hwZoom }]
+          });
+        }
+      } catch (err) {}
+    }
+  }
+
+  // Cập nhật trạng thái Active trên các nút Zoom UI
+  const zoomBtns = [
+    { id: 'btnZoom1x', val: 1.0 },
+    { id: 'btnZoom15x', val: 1.5 },
+    { id: 'btnZoom2x', val: 2.0 },
+    { id: 'btnZoom3x', val: 3.0 }
+  ];
+
+  zoomBtns.forEach(item => {
+    const btn = document.getElementById(item.id);
+    if (btn) {
+      if (Math.abs(item.val - targetZoom) < 0.15) {
+        btn.className = 'px-2.5 py-1 rounded-full text-xs font-extrabold transition bg-amber-400 text-slate-950 shadow-sm';
+      } else {
+        btn.className = 'px-2.5 py-1 rounded-full text-xs font-bold transition text-white/90 hover:text-white hover:bg-white/10';
+      }
+    }
+  });
+}
+
+// Chạm vào màn hình video để lấy nét (Tap to Focus)
+async function triggerScannerFocus(event) {
+  const video = document.getElementById('scannerVideo');
+  const ring = document.getElementById('scannerFocusRing');
+  if (!video || !ring) return;
+
+  const rect = video.getBoundingClientRect();
+  const clientX = event.clientX || (event.touches && event.touches[0]?.clientX);
+  const clientY = event.clientY || (event.touches && event.touches[0]?.clientY);
+
+  if (clientX === undefined || clientY === undefined) return;
+
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+
+  // Hiển thị vòng tròn lấy nét tại điểm chạm
+  ring.style.left = `${x}px`;
+  ring.style.top = `${y}px`;
+  ring.classList.remove('hidden');
+
+  // Áp dụng focusMode nếu trình duyệt/Android hỗ trợ
+  if (ScannerState.stream) {
+    const track = ScannerState.stream.getVideoTracks()[0];
+    if (track) {
+      try {
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+          await track.applyConstraints({
+            advanced: [{ focusMode: 'continuous' }]
+          });
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Tự động ẩn vòng lấy nét sau 800ms
+  setTimeout(() => {
+    if (ring) ring.classList.add('hidden');
+  }, 800);
 }
 
 // Chuyển đổi chế độ khung ngắm: Biển Vuông (Xe Tải/Ben/Moóc) hoặc Biển Dài (Xe Con/Bán Tải)
@@ -4450,10 +4546,10 @@ function setPlateScannerMode(mode) {
 
   if (ScannerState.plateMode === 'square') {
     if (btnSquare) {
-      btnSquare.className = 'flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold transition flex items-center justify-center gap-1 shadow-sm';
+      btnSquare.className = 'py-1 px-2.5 rounded-md bg-blue-600 text-white font-bold text-xs transition flex items-center gap-1 shadow-xs';
     }
     if (btnLong) {
-      btnLong.className = 'flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center justify-center gap-1';
+      btnLong.className = 'py-1 px-2.5 rounded-md text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center gap-1';
     }
     if (targetBox) {
       targetBox.style.maxWidth = '310px';
@@ -4463,10 +4559,10 @@ function setPlateScannerMode(mode) {
     if (longGuide) longGuide.classList.add('hidden');
   } else {
     if (btnSquare) {
-      btnSquare.className = 'flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center justify-center gap-1';
+      btnSquare.className = 'py-1 px-2.5 rounded-md text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center gap-1';
     }
     if (btnLong) {
-      btnLong.className = 'flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold transition flex items-center justify-center gap-1 shadow-sm';
+      btnLong.className = 'py-1 px-2.5 rounded-md bg-blue-600 text-white font-bold text-xs transition flex items-center gap-1 shadow-xs';
     }
     if (targetBox) {
       targetBox.style.maxWidth = '340px';
@@ -4482,6 +4578,7 @@ function resetScannerView() {
   ScannerState.isScanning = false;
   ScannerState.recognizedPlate = null;
   ScannerState.capturedDataUrl = null;
+  setScannerZoom(1.0);
 
   const preview = document.getElementById('scannerCapturedPreview');
   if (preview) {
@@ -4517,7 +4614,7 @@ async function captureAndRecognize() {
     return;
   }
 
-  // 1. Chụp toàn cảnh video
+  // 1. Chụp toàn cảnh video từ luồng camera sensor gốc
   const fullCanvas = document.createElement('canvas');
   fullCanvas.width = video.videoWidth;
   fullCanvas.height = video.videoHeight;
@@ -4525,30 +4622,46 @@ async function captureAndRecognize() {
   fullCtx.drawImage(video, 0, 0, fullCanvas.width, fullCanvas.height);
   const fullDataUrl = fullCanvas.toDataURL('image/jpeg', 0.88);
 
-  // 2. Cắt chính xác vùng khung ngắm vàng scannerTargetBox trên video thực tế
+  // 2. Cắt chính xác vùng khung ngắm vàng scannerTargetBox trên video thực tế (tính toán bù trừ Zoom)
   let cropDataUrl = fullDataUrl;
   if (targetBox) {
-    const videoRect = video.getBoundingClientRect();
+    const container = video.parentElement;
+    const contRect = container ? container.getBoundingClientRect() : { width: video.clientWidth, height: video.clientHeight, left: 0, top: 0 };
     const boxRect = targetBox.getBoundingClientRect();
 
-    if (videoRect.width > 0 && videoRect.height > 0) {
-      const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
+    if (contRect.width > 0 && contRect.height > 0) {
+      const Z = ScannerState.zoomLevel || 1.0;
+      const scale = Math.max(contRect.width / video.videoWidth, contRect.height / video.videoHeight);
       const renderedWidth = video.videoWidth * scale;
       const renderedHeight = video.videoHeight * scale;
-      const offsetX = (renderedWidth - videoRect.width) / 2;
-      const offsetY = (renderedHeight - videoRect.height) / 2;
+      const offsetX = (renderedWidth - contRect.width) / 2;
+      const offsetY = (renderedHeight - contRect.height) / 2;
 
-      const boxLeft = (boxRect.left - videoRect.left) + offsetX;
-      const boxTop = (boxRect.top - videoRect.top) + offsetY;
+      // Tâm container và tâm khung ngắm trong tọa độ container
+      const contCenterX = contRect.width / 2;
+      const contCenterY = contRect.height / 2;
+      const boxCenterX = (boxRect.left - contRect.left) + boxRect.width / 2;
+      const boxCenterY = (boxRect.top - contRect.top) + boxRect.height / 2;
+
+      // Tính vị trí tâm trong không gian video trước khi scale
+      const deltaX = (boxCenterX - contCenterX) / Z;
+      const deltaY = (boxCenterY - contCenterY) / Z;
+      const unscaledCenterX = contCenterX + deltaX;
+      const unscaledCenterY = contCenterY + deltaY;
 
       // Thêm lề an toàn: 8% ngang và 10% dọc để không bị cắt lẹm chóp hoặc chân số (nhất là biển vuông 2 dòng)
       const padW = boxRect.width * 0.08;
       const padH = boxRect.height * 0.10;
+      const effW = (boxRect.width + 2 * padW) / Z;
+      const effH = (boxRect.height + 2 * padH) / Z;
 
-      const cropX = Math.max(0, Math.round((boxLeft - padW) / scale));
-      const cropY = Math.max(0, Math.round((boxTop - padH) / scale));
-      const cropW = Math.min(video.videoWidth - cropX, Math.round((boxRect.width + 2 * padW) / scale));
-      const cropH = Math.min(video.videoHeight - cropY, Math.round((boxRect.height + 2 * padH) / scale));
+      // Chuyển sang tọa độ cảm biến camera thực tế (sensor coordinates)
+      const sensorCenterX = (unscaledCenterX + offsetX) / scale;
+      const sensorCenterY = (unscaledCenterY + offsetY) / scale;
+      const cropW = Math.min(video.videoWidth, Math.max(50, Math.round(effW / scale)));
+      const cropH = Math.min(video.videoHeight, Math.max(30, Math.round(effH / scale)));
+      const cropX = Math.max(0, Math.min(video.videoWidth - cropW, Math.round(sensorCenterX - cropW / 2)));
+      const cropY = Math.max(0, Math.min(video.videoHeight - cropH, Math.round(sensorCenterY - cropH / 2)));
 
       if (cropW > 50 && cropH > 30) {
         const cropCanvas = document.createElement('canvas');
@@ -4931,4 +5044,6 @@ window.closeQuickAiKeyModal = closeQuickAiKeyModal;
 window.toggleQuickKeyVisibility = toggleQuickKeyVisibility;
 window.saveQuickAiKey = saveQuickAiKey;
 window.checkScannerAiStatus = checkScannerAiStatus;
+window.setScannerZoom = setScannerZoom;
+window.triggerScannerFocus = triggerScannerFocus;
 
