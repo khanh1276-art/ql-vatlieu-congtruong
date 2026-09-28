@@ -31,16 +31,12 @@ function getApiBaseUrl() {
   const saved = localStorage.getItem('native_server_url');
   if (saved) return saved;
 
-  // Phát hiện môi trường chạy Android App (Capacitor Webview / file:// / capacitor://)
-  const isMobileApp = typeof window.Capacitor !== 'undefined' ||
-                      window.location.protocol === 'capacitor:' ||
-                      window.location.protocol === 'file:' ||
-                      (window.location.hostname === 'localhost' && !window.location.port);
-  if (isMobileApp) {
+  // Nếu đang mở trên localhost, file local hoặc WebView (không phải domain chính thức Render)
+  if (window.location.hostname !== 'ql-vatlieu-congtruong.onrender.com') {
     return API_DEFAULT_BASE;
   }
 
-  // Môi trường Web thông thường (Render hoặc localhost web server port 3000)
+  // Môi trường Web chính thức trên Render
   return '';
 }
 
