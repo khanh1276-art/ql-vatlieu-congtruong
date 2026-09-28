@@ -28,17 +28,20 @@ function getApiBaseUrl() {
   if (typeof NativeApp !== 'undefined' && NativeApp.getServerUrl) {
     return NativeApp.getServerUrl();
   }
-  const saved = localStorage.getItem('native_server_url');
-  if (saved) return saved;
-
-  // Nếu đang mở trên localhost, file local hoặc WebView (không phải domain chính thức Render)
-  if (window.location.hostname !== 'ql-vatlieu-congtruong.onrender.com') {
-    return API_DEFAULT_BASE;
-  }
-
-  // Môi trường Web chính thức trên Render
-  return '';
+  return localStorage.getItem('native_server_url') || API_DEFAULT_BASE;
 }
+
+// Interceptor phòng hộ: Bắt mọi lời gọi fetch('/api/...') và tự động chuyển về máy chủ Render
+const _originalFetch = window.fetch;
+window.fetch = function(resource, init) {
+  if (typeof resource === 'string' && resource.startsWith('/api/')) {
+    const base = getApiBaseUrl();
+    if (base) {
+      resource = `${base}${resource}`;
+    }
+  }
+  return _originalFetch.call(this, resource, init);
+};
 
 async function apiFetch(endpoint, options = {}) {
   let fullUrl = endpoint;
@@ -163,8 +166,7 @@ async function checkAuth() {
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
   try {
-    const res = await fetch('/api/auth/me', {
-      headers: { 'Authorization': `Bearer ${AppState.token}` },
+    const res = await apiFetch('/api/auth/me', {
       signal: controller.signal
     });
     clearTimeout(timeoutId);
@@ -203,7 +205,7 @@ async function handleLogin(e) {
   const timeoutId = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const res = await fetch('/api/auth/login', {
+    const res = await apiFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -296,9 +298,8 @@ function onLoginSuccess(user, token, showGreeting = false) {
 async function handleLogout() {
   if (!confirm('Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?')) return;
   try {
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${AppState.token}` }
+    await apiFetch('/api/auth/logout', {
+      method: 'POST'
     });
   } catch (e) {
     // Bỏ qua lỗi mạng khi logout
@@ -2938,10 +2939,7 @@ async function loadBackupInfo() {
 async function downloadJsonBackup() {
   try {
     showToast('Đang chuẩn bị bản sao lưu JSON...', 'info');
-    const token = AppState.token || localStorage.getItem('auth_token');
-    const res = await fetch('/api/backup/export', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const res = await apiFetch('/api/backup/export');
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error || 'Lỗi xuất dữ liệu');
@@ -2968,10 +2966,7 @@ async function downloadJsonBackup() {
 async function downloadDbFile() {
   try {
     showToast('Đang chuẩn bị file database SQLite...', 'info');
-    const token = AppState.token || localStorage.getItem('auth_token');
-    const res = await fetch('/api/backup/download-db', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const res = await apiFetch('/api/backup/download-db');
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error || 'Lỗi tải database');
