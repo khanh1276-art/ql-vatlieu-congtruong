@@ -3677,6 +3677,43 @@ const VALID_PROVINCE_CODES = new Set([
 // A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z, R (loại trừ I, J, O, Q, W)
 const VALID_SERIES_LETTERS = 'ABCDEFGHKLMNPSTUVWXYZR';
 
+// Bảng tra cứu ký hiệu riêng xe cơ giới theo Thông tư Bộ Công An (Ảnh 1 người dùng gửi)
+const SPECIAL_VEHICLE_SERIES = {
+  'KT': 'Xe doanh nghiệp Quân đội',
+  'TD': 'Xe thí điểm sản xuất, lắp ráp trong nước',
+  'TĐ': 'Xe thí điểm sản xuất, lắp ráp trong nước',
+  'MD': 'Xe máy điện',
+  'MĐ': 'Xe máy điện',
+  'LD': 'Xe doanh nghiệp có vốn đầu tư nước ngoài',
+  'DA': 'Xe ban quản lý dự án do nước ngoài đầu tư',
+  'RM': 'Xe rơ moóc, sơ mi rơ moóc',
+  'MK': 'Máy kéo nông - lâm - công trình',
+  'T': 'Xe đăng ký tạm thời',
+  'HC': 'Xe ô tô phạm vi hoạt động hạn chế',
+  'CD': 'Xe chuyên dùng của Công an nhân dân'
+};
+
+function getPlateVehicleDescription(series) {
+  if (!series) return 'Xe cơ giới';
+  const ser = series.toUpperCase();
+  if (SPECIAL_VEHICLE_SERIES[ser]) {
+    return SPECIAL_VEHICLE_SERIES[ser];
+  }
+  if (ser.startsWith('C') || ser.startsWith('D')) {
+    return 'Xe tải, xe bán tải chuyên dụng';
+  }
+  if (ser.startsWith('R')) {
+    return 'Xe rơ moóc, đầu kéo container';
+  }
+  if (ser.startsWith('A') || ser.startsWith('E') || ser.startsWith('F')) {
+    return 'Xe con / chở người dưới 9 chỗ';
+  }
+  if (ser.startsWith('B')) {
+    return 'Xe khách từ 9 chỗ trở lên';
+  }
+  return 'Xe vận chuyển cơ giới';
+}
+
 // Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Bộ Công An
 // Quy chuẩn ô tô: [Mã tỉnh: đúng 2 số trong danh mục 81 mã tỉnh][Sê-ri: 1-2 chữ cái]-[Dãy số: xxx.xx hoặc xxxx]
 function cleanAndNormalizePlateText(text) {
@@ -3693,8 +3730,8 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[T]/g, '7')
     .replace(/[B]/g, '8');
 
-  // Làm sạch văn bản thô
-  const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
+  // Làm sạch văn bản thô, chuẩn hóa Đ/đ về D để đồng nhất ASCII
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\sĐđ]/g, ' ').toUpperCase().replace(/Đ/g, 'D');
 
   // Hàm chọn mã tỉnh 2 số hợp lệ từ chuỗi số
   function pickValidProvince(digitsStr) {
@@ -4354,6 +4391,9 @@ function resetScannerView() {
   const resultCard = document.getElementById('scannerResultCard');
   if (resultCard) resultCard.classList.add('hidden');
 
+  const typeBox = document.getElementById('scannerPlateTypeBadgeBox');
+  if (typeBox) typeBox.classList.add('hidden');
+
   const controls = document.getElementById('scannerControlsRow');
   if (controls) controls.classList.remove('hidden');
 }
@@ -4534,6 +4574,21 @@ async function processPlateRecognition(cropDataUrl, fullDataUrl = null) {
     const matchInfoBox = document.getElementById('scannerVehicleMatchInfo');
     const matchName = document.getElementById('scannerMatchedVehName');
     const matchDetail = document.getElementById('scannerMatchedVehDetail');
+
+    // Hiển thị phân loại xe theo sê-ri chuẩn Bộ Công An
+    const typeBox = document.getElementById('scannerPlateTypeBadgeBox');
+    const typeName = document.getElementById('scannerPlateTypeName');
+    const typeIcon = document.getElementById('scannerPlateTypeIcon');
+    if (typeBox && typeName) {
+      const mSer = cleanPlateUpper.match(/^[0-9]{2}([A-Z0-9]{1,2})-/);
+      const ser = mSer ? mSer[1] : '';
+      const desc = getPlateVehicleDescription(ser);
+      typeName.textContent = desc;
+      if (typeIcon) {
+        typeIcon.textContent = SPECIAL_VEHICLE_SERIES[ser] ? '🎖️' : (ser.startsWith('C') || ser.startsWith('D') ? '🚚' : (ser.startsWith('R') ? '🚛' : '🚗'));
+      }
+      typeBox.classList.remove('hidden');
+    }
 
     if (matchedVeh && matchInfoBox) {
       matchInfoBox.classList.remove('hidden');
@@ -4732,9 +4787,25 @@ async function testGeminiConnection() {
   }
 }
 
+// Mở modal Hướng dẫn & Quy chuẩn Biển số xe
+function openPlateGuidelinesModal() {
+  const modal = document.getElementById('plateGuidelinesModal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+// Đóng modal Hướng dẫn & Quy chuẩn Biển số xe
+function closePlateGuidelinesModal() {
+  const modal = document.getElementById('plateGuidelinesModal');
+  if (modal) modal.classList.add('hidden');
+}
+
 // Gắn các hàm Scanner & AI ra global window
 window.openPlateScannerModal = openPlateScannerModal;
 window.closePlateScannerModal = closePlateScannerModal;
+window.openPlateGuidelinesModal = openPlateGuidelinesModal;
+window.closePlateGuidelinesModal = closePlateGuidelinesModal;
+window.getPlateVehicleDescription = getPlateVehicleDescription;
+window.SPECIAL_VEHICLE_SERIES = SPECIAL_VEHICLE_SERIES;
 window.startScannerCamera = startScannerCamera;
 window.stopScannerCamera = stopScannerCamera;
 window.switchCameraFacing = switchCameraFacing;

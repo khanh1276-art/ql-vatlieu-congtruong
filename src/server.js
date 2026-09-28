@@ -140,6 +140,43 @@ const VALID_PROVINCE_CODES = new Set([
 // A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z, R (loại trừ I, J, O, Q, W)
 const VALID_SERIES_LETTERS = 'ABCDEFGHKLMNPSTUVWXYZR';
 
+// Bảng tra cứu ký hiệu riêng xe cơ giới theo Thông tư Bộ Công An
+const SPECIAL_VEHICLE_SERIES = {
+  'KT': 'Xe doanh nghiệp Quân đội',
+  'TD': 'Xe thí điểm sản xuất, lắp ráp trong nước',
+  'TĐ': 'Xe thí điểm sản xuất, lắp ráp trong nước',
+  'MD': 'Xe máy điện',
+  'MĐ': 'Xe máy điện',
+  'LD': 'Xe doanh nghiệp có vốn đầu tư nước ngoài',
+  'DA': 'Xe ban quản lý dự án do nước ngoài đầu tư',
+  'RM': 'Xe rơ moóc, sơ mi rơ moóc',
+  'MK': 'Máy kéo nông - lâm - công trình',
+  'T': 'Xe đăng ký tạm thời',
+  'HC': 'Xe ô tô phạm vi hoạt động hạn chế',
+  'CD': 'Xe chuyên dùng của Công an nhân dân'
+};
+
+function getPlateVehicleDescription(series) {
+  if (!series) return 'Xe cơ giới';
+  const ser = series.toUpperCase();
+  if (SPECIAL_VEHICLE_SERIES[ser]) {
+    return SPECIAL_VEHICLE_SERIES[ser];
+  }
+  if (ser.startsWith('C') || ser.startsWith('D')) {
+    return 'Xe tải, xe bán tải chuyên dụng';
+  }
+  if (ser.startsWith('R')) {
+    return 'Xe rơ moóc, đầu kéo container';
+  }
+  if (ser.startsWith('A') || ser.startsWith('E') || ser.startsWith('F')) {
+    return 'Xe con / chở người dưới 9 chỗ';
+  }
+  if (ser.startsWith('B')) {
+    return 'Xe khách từ 9 chỗ trở lên';
+  }
+  return 'Xe vận chuyển cơ giới';
+}
+
 // Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Bộ Công An
 // Quy chuẩn ô tô: [Mã tỉnh: đúng 2 số trong danh mục 81 mã tỉnh][Sê-ri: 1-2 chữ cái]-[Dãy số: xxx.xx hoặc xxxx]
 function cleanAndNormalizePlateText(text) {
@@ -156,8 +193,8 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[T]/g, '7')
     .replace(/[B]/g, '8');
 
-  // Làm sạch văn bản thô
-  const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
+  // Làm sạch văn bản thô, chuẩn hóa Đ/đ về D để đồng nhất ASCII
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\sĐđ]/g, ' ').toUpperCase().replace(/Đ/g, 'D');
 
   // Hàm chọn mã tỉnh 2 số hợp lệ từ chuỗi số
   function pickValidProvince(digitsStr) {
@@ -223,7 +260,7 @@ function cleanAndNormalizePlateText(text) {
     if (prov) return `${prov}${mf[2]}-${mf[3]}.${mf[4]}`;
   }
 
-  // 2.3: Biển 4 số: VD '30H-9999', '29C 8888'
+  // 2.3: Biển 4 số: VD '30H-9999', '29C 8888', '29T-1234'
   const rFlat4 = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9]{4})(?![0-9.])`);
   mf = flat.match(rFlat4);
   if (mf) {
@@ -299,14 +336,20 @@ function parseGeminiPlateResult(rawText) {
     if (json.plate) {
       const normalized = cleanAndNormalizePlateText(String(json.plate)) || String(json.plate).toUpperCase().trim().replace(/\s+/g, '');
       json.plate = normalized;
+      if (!json.vehicle_type) {
+        const m = normalized.match(/^[0-9]{2}([A-Z0-9]{1,2})-/);
+        json.vehicle_type = getPlateVehicleDescription(m ? m[1] : '');
+      }
     }
     return json;
   } catch (e) {
     const norm = cleanAndNormalizePlateText(rawText);
     if (norm) {
+      const m = norm.match(/^[0-9]{2}([A-Z0-9]{1,2})-/);
       return {
         plate: norm,
         confidence: 0.9,
+        vehicle_type: getPlateVehicleDescription(m ? m[1] : ''),
         notes: 'Trích xuất biển số chuẩn hóa'
       };
     }
@@ -315,6 +358,7 @@ function parseGeminiPlateResult(rawText) {
       return {
         plate: match[1].toUpperCase().replace(/\s+/g, ''),
         confidence: 0.85,
+        vehicle_type: 'Xe cơ giới',
         notes: 'Trích xuất biển số dạng văn bản'
       };
     }
@@ -325,15 +369,28 @@ function parseGeminiPlateResult(rawText) {
 // Gọi API Gemini Vision để đọc biển số xe từ ảnh base64
 async function callGeminiLicensePlate(apiKey, base64Data, mimeType = 'image/jpeg') {
   const prompt = `Bạn là hệ thống AI nhận diện biển số xe cơ giới chuyên dụng tại công trường Việt Nam.
-Nhiệm vụ: Đọc chính xác biển số xe cơ giới (xe tải ben, xe bồn, đầu kéo mooc, container, xe chở vật liệu) trong ảnh.
+Nhiệm vụ: Đọc chính xác biển số xe cơ giới (xe tải ben, xe bồn, đầu kéo mooc, container, máy kéo, xe chở vật liệu) trong ảnh.
 Quy chuẩn biển số ô tô Việt Nam theo quy định Bộ Công An:
 1. Cấu trúc bắt buộc: [Mã địa phương][Sê-ri]-[Dãy số thứ tự]
    - Mã địa phương: Đúng 2 chữ số thuộc 81 mã tỉnh thành Việt Nam (VD: 51, 50, 52, 29, 30, 14, 15, 60, 61, 72, 80, 98, 99...). Tuyệt đối không đọc ra 3 số ở đầu (như '351H' là sai, phải là '51H' do số 3 là viền rác hoặc bóng phản chiếu).
-   - Sê-ri đăng ký: Gồm 20 chữ cái in hoa chuẩn: A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z (hoặc R cho rơ-moóc; không dùng I, J, O, Q, W). Có thể là 1 chữ cái, 2 chữ cái (LD, DA, RM) hoặc chữ + số (C1, A1, D1).
-   - Dãy số: 5 chữ số có chấm phân cách 'xxx.xx' (VD: 919.91, 881.23) hoặc 4 số cũ 'xxxx' (VD: 9999).
-2. Chuẩn hóa biển số thành dạng: "51H-919.91", "29C-881.23", "60C-123.45", "15R-012.34".
+   - Sê-ri đăng ký tiêu chuẩn: 20 chữ cái in hoa: A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z (hoặc C1, A1, D1 cho xe tải/bán tải).
+   - 10 KÝ HIỆU RIÊNG XE CƠ GIỚI:
+     * KT: Xe doanh nghiệp Quân đội (VD: 29KT-113.97)
+     * TĐ: Xe thí điểm sản xuất, lắp ráp trong nước
+     * MĐ: Xe máy điện
+     * LD: Xe doanh nghiệp có vốn đầu tư nước ngoài (VD: 29LD-012.34)
+     * DA: Xe ban quản lý dự án do nước ngoài đầu tư
+     * RM: Xe rơ moóc, sơ mi rơ moóc (VD: 15RM-012.34)
+     * MK: Máy kéo
+     * T: Xe đăng ký tạm thời
+     * HC: Xe ô tô phạm vi hoạt động hạn chế
+     * CD: Xe chuyên dùng của Công an nhân dân
+   - Dãy số thứ tự: 5 chữ số có chấm phân cách 'xxx.xx' (VD: 256.58, 113.97, 919.91) hoặc 4 số cũ 'xxxx' (VD: 9999).
+2. Quy cách hiển thị trên biển số theo bản vẽ kỹ thuật BCA:
+   - Biển 1 dòng dài (520x110mm): [Mã tỉnh + Sê-ri] [Dấu chấm] [Dãy số] -> Ghép lại thành "30F-256.58", "29KT-113.97", "51H-919.91".
+   - Biển 2 dòng vuông (330x165mm): Dòng trên "30F" hoặc "29KT", dòng dưới "256.58" hoặc "113.97" -> Ghép lại thành "30F-256.58", "29KT-113.97".
 Trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm markdown):
-{"plate": "51H-919.91", "confidence": 0.98, "vehicle_type": "Xe tải", "notes": "Biển số rõ nét"}
+{"plate": "29KT-113.97", "confidence": 0.98, "vehicle_type": "Xe doanh nghiệp Quân đội", "notes": "Biển số rõ nét"}
 Nếu không phát hiện được biển số xe, trả về:
 {"plate": null, "confidence": 0, "vehicle_type": null, "notes": "Không phát hiện biển số xe"}`;
 

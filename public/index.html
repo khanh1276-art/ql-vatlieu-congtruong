@@ -116,10 +116,10 @@
               <img src="icon-192.png" class="w-9 h-9 rounded-xl object-contain shadow-xs border border-emerald-200 flex-shrink-0" alt="FECON QLVT App">
               <div class="text-left">
                 <div class="text-xs font-bold text-slate-800">Cài đặt App Android</div>
-                <div class="text-[11px] text-slate-500 font-medium">Bản cài APK trực tiếp (v1.3.5)</div>
+                <div class="text-[11px] text-slate-500 font-medium">Bản cài APK trực tiếp (v1.3.6)</div>
               </div>
             </div>
-            <a href="/downloads/FECON-QLVT-v1.3.5.apk" download="FECON-QLVT-v1.3.5.apk"
+            <a href="/downloads/FECON-QLVT-v1.3.6.apk" download="FECON-QLVT-v1.3.6.apk"
               class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-sm transition flex items-center space-x-1">
               <span>📥 Tải APK</span>
             </a>
@@ -147,7 +147,7 @@
           <div>
             <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-white leading-tight flex items-center gap-2">
               <span>FECON QUẢN LÝ VẬT TƯ</span>
-              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.5</span>
+              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.6</span>
             </h1>
             <p class="text-[11px] sm:text-xs text-slate-400 font-medium">Kiểm Soát Nhập Xuất • Đa Dự Án • Khóa Sổ Ngày</p>
           </div>
@@ -169,7 +169,7 @@
           </div>
 
           <!-- Nút tải App Android APK trực tiếp -->
-          <a href="/downloads/FECON-QLVT-v1.3.5.apk" download="FECON-QLVT-v1.3.5.apk" title="Tải file cài đặt APK cho điện thoại Android"
+          <a href="/downloads/FECON-QLVT-v1.3.6.apk" download="FECON-QLVT-v1.3.6.apk" title="Tải file cài đặt APK cho điện thoại Android"
             class="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold border border-emerald-500 shadow-sm transition">
             <span>📱</span>
             <span>App Android</span>
@@ -2050,9 +2050,15 @@
             <span id="scannerAiIcon" class="text-base">⚡</span>
             <span id="scannerAiText" class="font-medium">Đang dùng <b>OCR Thiết Bị (Offline)</b>. Cài đặt Gemini AI để nhận diện chuẩn 99%.</span>
           </div>
-          <button type="button" onclick="openQuickAiKeyModal()" id="scannerAiKeyBtn" class="ml-2 shrink-0 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg font-bold text-[11px] shadow-sm transition">
-            🔑 Cài Key AI
-          </button>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button type="button" onclick="openPlateGuidelinesModal()" class="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-lg font-bold text-[11px] shadow-sm transition flex items-center gap-1" title="Xem quy chuẩn kích thước biển số và các ký hiệu riêng Bộ Công An">
+              <span>📋</span>
+              <span class="hidden xs:inline">Quy Chuẩn</span>
+            </button>
+            <button type="button" onclick="openQuickAiKeyModal()" id="scannerAiKeyBtn" class="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg font-bold text-[11px] shadow-sm transition">
+              🔑 Cài Key AI
+            </button>
+          </div>
         </div>
 
         <!-- Live Camera Viewfinder & File Fallback -->
@@ -2139,6 +2145,15 @@
             </div>
           </div>
 
+          <!-- Phân loại xe theo sê-ri chuẩn Bộ Công An -->
+          <div id="scannerPlateTypeBadgeBox" class="hidden flex items-center gap-2 p-2 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-950">
+            <span id="scannerPlateTypeIcon" class="text-base shrink-0">🏷️</span>
+            <div>
+              <div class="text-[10px] text-blue-600 font-semibold uppercase tracking-wider">Phân Loại Xe Cơ Giới (Bộ Công An)</div>
+              <div class="font-bold text-slate-800 text-xs" id="scannerPlateTypeName">Xe vận chuyển cơ giới</div>
+            </div>
+          </div>
+
           <!-- Matched Vehicle Notification (If already in database) -->
           <div id="scannerVehicleMatchInfo" class="text-xs p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 space-y-0.5 hidden">
             <div class="font-bold flex items-center gap-1">
@@ -2160,6 +2175,96 @@
           </div>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL QUY CHUẨN KÝ HIỆU & KÍCH THƯỚC BIỂN SỐ XE (BỘ CÔNG AN) -->
+  <div id="plateGuidelinesModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[60] flex items-center justify-center p-3 sm:p-4 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
+      <!-- Header -->
+      <div class="bg-gradient-to-r from-slate-900 via-blue-900 to-slate-900 text-white px-5 py-3.5 flex items-center justify-between shrink-0 shadow-md">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-8 h-8 rounded-lg bg-amber-400/20 text-amber-300 flex items-center justify-center text-base shadow-inner">📋</div>
+          <div>
+            <h3 class="text-sm sm:text-base font-bold tracking-tight">Quy Chuẩn Ký Hiệu & Kích Thước Biển Số Xe</h3>
+            <p class="text-[11px] text-slate-300">Quy định Bộ Công An & Mẫu chuẩn hóa nhận diện</p>
+          </div>
+        </div>
+        <button onclick="closePlateGuidelinesModal()" class="text-white/70 hover:text-white text-2xl font-bold leading-none p-1 rounded-lg hover:bg-white/10 transition">&times;</button>
+      </div>
+
+      <!-- Body -->
+      <div class="p-4 sm:p-5 overflow-y-auto space-y-4 text-xs text-slate-700">
+        <!-- 1. BẢN VẼ KỸ THUẬT VÀ KÍCH THƯỚC BIỂN SỐ CHUẨN -->
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
+          <div class="flex items-center justify-between">
+            <h4 class="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+              <span>📐</span>
+              <span>1. Bản Vẽ Kỹ Thuật & Cấu Trúc Biển Số Ô Tô</span>
+            </h4>
+            <span class="text-[10px] px-2 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">Chuẩn Bộ Công An</span>
+          </div>
+          <div class="rounded-lg overflow-hidden border border-slate-200 bg-white">
+            <img src="images/quy_chuan_kich_thuoc_bien_so.png" alt="Bản vẽ kích thước biển số xe" class="w-full h-auto object-contain">
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] pt-1">
+            <div class="p-2 rounded-lg bg-white border border-slate-200">
+              <span class="font-bold text-blue-800">Biển Vuông (330 x 165 mm):</span>
+              <p class="text-slate-600 mt-0.5">Dòng trên: Mã tỉnh + Sê-ri (VD <b>30F</b>, <b>29KT</b>). Dòng dưới: 5 số có chấm (VD <b>256.58</b>, <b>113.97</b>).</p>
+            </div>
+            <div class="p-2 rounded-lg bg-white border border-slate-200">
+              <span class="font-bold text-blue-800">Biển Dài (520 x 110 mm):</span>
+              <p class="text-slate-600 mt-0.5">Mã tỉnh + Sê-ri viết liền trước, sau đó là dấu chấm tròn/gạch và 5 số thứ tự (VD <b>30F-256.58</b>, <b>29KT-113.97</b>).</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. BẢNG 10 KÝ HIỆU RIÊNG XE CƠ GIỚI -->
+        <div class="bg-amber-50/60 border border-amber-200 rounded-xl p-3.5 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <h4 class="font-bold text-amber-950 text-xs flex items-center gap-1.5">
+              <span>🏷️</span>
+              <span>2. Bảng 10 Ký Hiệu Riêng Xe Cơ Giới</span>
+            </h4>
+            <span class="text-[10px] px-2 py-0.5 rounded bg-amber-200 text-amber-900 font-bold">Nhận Diện Tự Động</span>
+          </div>
+          <div class="rounded-lg overflow-hidden border border-amber-200 bg-white">
+            <img src="images/quy_chuan_bien_so_ky_hieu_rieng.png" alt="Bảng ký hiệu riêng biển số xe" class="w-full h-auto object-contain">
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[11px] pt-1 font-mono">
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">KT</b>: Quân đội</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">TĐ</b>: Thí điểm SX</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">MĐ</b>: Xe máy điện</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">LD</b>: Vốn nước ngoài</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">DA</b>: BQL Dự án</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">RM</b>: Rơ moóc</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">MK</b>: Máy kéo</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">T</b>: Đăng ký tạm</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">HC</b>: Hạn chế</div>
+            <div class="p-1.5 bg-white rounded border border-amber-200 text-center"><b class="text-blue-700">CD</b>: Chuyên dùng CA</div>
+          </div>
+        </div>
+
+        <!-- 3. MẸO CHỤP ĐỂ NHẬN DIỆN 10/10 LẦN CHÍNH XÁC -->
+        <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 space-y-1.5 text-emerald-950">
+          <h4 class="font-bold text-xs flex items-center gap-1.5 text-emerald-900">
+            <span>💡</span>
+            <span>3. Mẹo Chụp Căn Khung Chuẩn Xác 10/10</span>
+          </h4>
+          <ul class="list-disc list-inside space-y-1 text-[11px] text-emerald-800">
+            <li><b>Khung ngắm vàng</b>: Căn biển số xe nằm lọt trọn vẹn vào trong 4 góc định vị màu vàng.</li>
+            <li><b>Góc chụp thẳng</b>: Đặt camera đối diện vuông góc với mặt biển, hạn chế chụp góc nghiêng quá 30 độ.</li>
+            <li><b>Tránh lóa sáng</b>: Nếu nilon bọc biển phản quang bóng đèn, nghiêng nhẹ máy 5 độ để triệt tiêu đốm lóa.</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="p-3 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
+        <button type="button" onclick="closePlateGuidelinesModal()" class="px-5 py-2 bg-slate-800 hover:bg-slate-900 active:bg-black text-white font-bold text-xs rounded-xl shadow-sm transition">
+          Đóng Hướng Dẫn
+        </button>
       </div>
     </div>
   </div>
