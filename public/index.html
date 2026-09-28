@@ -116,10 +116,10 @@
               <img src="icon-192.png" class="w-9 h-9 rounded-xl object-contain shadow-xs border border-emerald-200 flex-shrink-0" alt="FECON QLVT App">
               <div class="text-left">
                 <div class="text-xs font-bold text-slate-800">Cài đặt App Android</div>
-                <div class="text-[11px] text-slate-500 font-medium">Bản cài APK trực tiếp (v1.3.8)</div>
+                <div class="text-[11px] text-slate-500 font-medium">Bản cài APK trực tiếp (v1.3.9)</div>
               </div>
             </div>
-            <a href="/downloads/FECON-QLVT-v1.3.8.apk" download="FECON-QLVT-v1.3.8.apk"
+            <a href="/downloads/FECON-QLVT-v1.3.9.apk" download="FECON-QLVT-v1.3.9.apk"
               class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-sm transition flex items-center space-x-1">
               <span>📥 Tải APK</span>
             </a>
@@ -147,7 +147,7 @@
           <div>
             <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-white leading-tight flex items-center gap-2">
               <span>FECON QUẢN LÝ VẬT TƯ</span>
-              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.8</span>
+              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.9</span>
             </h1>
             <p class="text-[11px] sm:text-xs text-slate-400 font-medium">Kiểm Soát Nhập Xuất • Đa Dự Án • Khóa Sổ Ngày</p>
           </div>
@@ -169,7 +169,7 @@
           </div>
 
           <!-- Nút tải App Android APK trực tiếp -->
-          <a href="/downloads/FECON-QLVT-v1.3.8.apk" download="FECON-QLVT-v1.3.8.apk" title="Tải file cài đặt APK cho điện thoại Android"
+          <a href="/downloads/FECON-QLVT-v1.3.9.apk" download="FECON-QLVT-v1.3.9.apk" title="Tải file cài đặt APK cho điện thoại Android"
             class="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold border border-emerald-500 shadow-sm transition">
             <span>📱</span>
             <span>App Android</span>
@@ -269,13 +269,21 @@
                 <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Biển Số Xe / Số Hiệu Xe <span class="text-red-500">*</span>
                 </label>
-                <button type="button" onclick="openPlateScannerModal()" 
-                  class="px-2.5 py-1 text-xs font-bold rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white flex items-center gap-1.5 shadow-sm active:scale-95 transition"
-                  title="Chụp ảnh nhận diện biển số xe tự động (AI Cloud / OCR Offline)">
-                  <span>📷</span>
-                  <span>Quét Biển Số</span>
-                  <span class="text-[10px] bg-white/20 px-1 py-0.2 rounded font-semibold">AI</span>
-                </button>
+                <div class="flex items-center gap-1.5">
+                  <button type="button" onclick="captureWithNativeDeviceCamera()" 
+                    class="px-2 py-1 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white flex items-center gap-1 shadow-sm transition"
+                    title="Mở máy ảnh gốc của điện thoại (hỗ trợ ống kính Tele zoom quang học 2x-5x, cảm biến 48MP/50MP siêu nét)">
+                    <span>📸</span>
+                    <span>Camera Máy</span>
+                  </button>
+                  <button type="button" onclick="openPlateScannerModal()" 
+                    class="px-2 py-1 text-xs font-bold rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white flex items-center gap-1 shadow-sm active:scale-95 transition"
+                    title="Mở khung ngắm quét biển số trực tiếp trên màn hình">
+                    <span>📷</span>
+                    <span>Quét Trực Tiếp</span>
+                    <span class="text-[10px] bg-white/20 px-1 py-0.2 rounded font-semibold">AI</span>
+                  </button>
+                </div>
               </div>
               <div class="relative">
                 <input type="text" id="checkin_plate" required placeholder="VD: 29C-881.23, 29C-771.88..." 
@@ -2164,23 +2172,40 @@
         </div>
 
         <!-- Camera Controls -->
-        <div id="scannerControlsRow" class="flex items-center gap-2">
-          <button type="button" onclick="captureAndRecognize()" 
-            class="flex-1 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 active:scale-[0.98] text-white font-bold text-sm rounded-xl shadow-lg flex items-center justify-center gap-2 transition">
-            <span class="text-lg">📸</span>
-            <span>Chụp & Nhận Diện</span>
-          </button>
-          
-          <button type="button" onclick="switchCameraFacing()" title="Đổi camera trước / sau"
-            class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
-            <span>🔄</span>
-          </button>
+        <div id="scannerControlsRow" class="space-y-2">
+          <!-- Gợi ý giải pháp Zoom nét khi xe ở xa -->
+          <div class="flex items-center justify-between px-3 py-1.5 bg-amber-50 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 shadow-xs">
+            <span>💡 <i>Xe ở xa 3–5m? Hãy chụp bằng <b>Camera Máy</b> để dùng Zoom quang tele cực nét!</i></span>
+            <button type="button" onclick="captureWithNativeDeviceCamera()" class="font-extrabold text-emerald-700 hover:text-emerald-800 underline ml-2 shrink-0">Chụp ngay</button>
+          </div>
 
-          <button type="button" onclick="document.getElementById('scannerFileInput').click()" title="Mở máy ảnh ngoài hoặc chọn file ảnh từ máy"
-            class="px-3.5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 flex items-center gap-1.5 transition">
-            <span>📁</span>
-            <span class="hidden sm:inline">Tải / Chụp Ảnh</span>
-          </button>
+          <div class="flex items-center gap-2">
+            <!-- Nút 1: Chụp bằng camera live stream -->
+            <button type="button" onclick="captureAndRecognize()" 
+              class="flex-1 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 active:scale-[0.98] text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition">
+              <span class="text-base sm:text-lg">📸</span>
+              <span>Chụp Live</span>
+            </button>
+
+            <!-- Nút 2: Chụp bằng Camera Gốc của điện thoại (Tele optical zoom / 50MP / OIS) -->
+            <button type="button" onclick="captureWithNativeDeviceCamera()" title="Mở máy ảnh gốc của điện thoại để dùng Zoom quang học và cảm biến 50MP nét cao"
+              class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition">
+              <span class="text-base sm:text-lg">📷</span>
+              <span>Camera Máy (Nét Cao)</span>
+            </button>
+            
+            <!-- Nút 3: Đổi camera trước / sau -->
+            <button type="button" onclick="switchCameraFacing()" title="Đổi camera trước / sau"
+              class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
+              <span>🔄</span>
+            </button>
+
+            <!-- Nút 4: Chọn file ảnh có sẵn -->
+            <button type="button" onclick="document.getElementById('scannerFileInput').click()" title="Chọn tệp ảnh từ máy"
+              class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
+              <span>📁</span>
+            </button>
+          </div>
         </div>
 
         <!-- Result Card (Appears after successful scan) -->
