@@ -123,6 +123,130 @@ function generateTicketCode(customDateOrString = null) {
   return `${prefix}${String(nextSeq).padStart(4, '0')}`;
 }
 
+// Tiện ích bóc tách và chuẩn hóa kết quả nhận diện biển số xe từ Gemini AI
+function parseGeminiPlateResult(rawText) {
+  if (!rawText) return null;
+  let cleaned = rawText.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  }
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+  try {
+    const json = JSON.parse(cleaned);
+    if (json.plate) {
+      json.plate = String(json.plate).toUpperCase().trim().replace(/\s+/g, '');
+    }
+    return json;
+  } catch (e) {
+    const match = rawText.match(/\b([0-9]{2}[A-Z]{1,2}[-\s]?[0-9]{4,5}(?:\.[0-9]{2})?)\b/i);
+    if (match) {
+      return {
+        plate: match[1].toUpperCase().replace(/\s+/g, ''),
+        confidence: 0.85,
+        notes: 'Trích xuất biển số dạng văn bản'
+      };
+    }
+    return null;
+  }
+}
+
+// Gọi API Gemini 3.8 Flash Vision để đọc biển số xe từ ảnh base64
+async function callGeminiLicensePlate(apiKey, base64Data, mimeType = 'image/jpeg') {
+  const prompt = `Bạn là hệ thống nhận diện biển số xe cơ giới thông minh tại công trường Việt Nam.
+Nhiệm vụ: Đọc chính xác biển số xe cơ giới (xe tải ben, xe bồn, đầu kéo mooc, container, xe chở vật liệu) trong bức ảnh được cung cấp.
+Quy chuẩn biển số xe cơ giới tại Việt Nam:
+- Mã tỉnh (2 chữ số: 15, 29, 30, 51, 60,...) + Sê-ri chữ cái (1 hoặc 2 chữ: C, D, H, K, LD, R, RM...) + Dấu gạch ngang + Dãy số thứ tự (4 hoặc 5 số).
+- Biển 1 dòng (dài): VD 29C-881.23, 15C-345.67, 30H-9999, 29R-012.34
+- Biển 2 dòng (vuông): Dòng trên "29C", dòng dưới "881.23" -> Ghép lại thành "29C-881.23".
+Yêu cầu kết quả trả về:
+1. Chuẩn hóa biển số thành chữ in hoa, có gạch nối phân cách: ví dụ "29C-881.23", "51D-123.45".
+2. Trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm giải thích, không markdown code fence):
+{"plate": "29C-881.23", "confidence": 0.98, "vehicle_type": "Xe tải ben", "notes": "Biển số rõ nét"}
+Nếu ảnh mờ hoặc không có biển số xe, trả về:
+{"plate": null, "confidence": 0, "vehicle_type": null, "notes": "Không phát hiện biển số xe"}`;
+
+  // 1. Thử Interactions API (Model gemini-3.8-flash)
+  try {
+    const interRes = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+      method: 'POST',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+        'Api-Revision': '2026-05-20'
+      },
+      body: JSON.stringify({
+        model: 'gemini-3.8-flash',
+        input: [
+          { type: 'text', text: prompt },
+          { type: 'image', data: base64Data, mime_type: mimeType }
+        ]
+      }),
+      signal: AbortSignal.timeout(12000)
+    });
+
+    if (interRes.ok) {
+      const data = await interRes.json();
+      let text = '';
+      if (data.output_text) {
+        text = data.output_text;
+      } else if (Array.isArray(data.steps)) {
+        for (const step of data.steps) {
+          if (step.type === 'model_output' && Array.isArray(step.content)) {
+            for (const c of step.content) {
+              if (c.type === 'text') text += c.text;
+            }
+          }
+        }
+      }
+      if (text) {
+        const parsed = parseGeminiPlateResult(text);
+        if (parsed) return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('[Gemini Interactions]:', e.message);
+  }
+
+  // 2. Fallback GenerateContent API (gemini-3.8-flash hoặc gemini-flash-latest)
+  const models = ['gemini-3.8-flash', 'gemini-flash-latest'];
+  for (const m of models) {
+    try {
+      const genRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: prompt },
+                { inline_data: { mime_type: mimeType, data: base64Data } }
+              ]
+            }
+          ]
+        }),
+        signal: AbortSignal.timeout(12000)
+      });
+      if (genRes.ok) {
+        const data = await genRes.json();
+        const cand = data.candidates?.[0];
+        const textPart = cand?.content?.parts?.[0]?.text;
+        if (textPart) {
+          const parsed = parseGeminiPlateResult(textPart);
+          if (parsed) return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn(`[Gemini generateContent ${m}]:`, e.message);
+    }
+  }
+
+  throw new Error('Không thể kết nối hoặc nhận diện qua Google Gemini Vision');
+}
+
 // Đọc body của request dạng JSON
 function parseRequestBody(req) {
   return new Promise((resolve, reject) => {
@@ -1117,13 +1241,15 @@ const server = http.createServer(async (req, res) => {
       const timeIn = body.time_in ? body.time_in : getLocalDateTime();
       const createdBy = currentUser ? `${currentUser.full_name} (${currentUser.role === 'ADMIN' ? 'Admin' : 'Công trường'})` : 'Cán bộ trực cổng';
 
+      const plateImage = (body.plate_image || '').trim();
+
       const result = db.prepare(`
         INSERT INTO tickets (
           ticket_code, project_id, project_name, vehicle_id, plate_number, supplier_id, supplier_name,
           material_id, material_name, unit, time_in, time_out,
           length, width, height, standard_volume, actual_volume,
-          is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'IN_YARD', ?, ?, ?)
+          is_manual_adjusted, adjustment_reason, status, created_by, notes, plate_image, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'IN_YARD', ?, ?, ?, ?)
       `).run(
         ticketCode, projectId, projectName, vehicleId, plate, supplierId, supplierName,
         materialId, materialName, unit, timeIn,
@@ -1131,6 +1257,7 @@ const server = http.createServer(async (req, res) => {
         isManualAdjusted, body.adjustment_reason || '',
         createdBy,
         body.notes || '',
+        plateImage || null,
         timeIn
       );
 
@@ -2035,6 +2162,112 @@ const server = http.createServer(async (req, res) => {
         db.exec('PRAGMA foreign_keys = ON;');
         console.error('Lỗi khi khôi phục dữ liệu:', err);
         return sendJson(res, 500, { error: 'Lỗi khôi phục cơ sở dữ liệu: ' + err.message });
+      }
+    }
+
+    // =========================================================================
+    // 8. CẤU HÌNH HỆ THỐNG & NHẬN DIỆN BIỂN SỐ AI VISION (HYBRID)
+    // =========================================================================
+    if (pathname === '/api/settings' && method === 'GET') {
+      const row = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_api_key'").get();
+      const dbKey = row ? row.value : '';
+      const envKey = process.env.GEMINI_API_KEY || '';
+      const activeKey = envKey || dbKey;
+      const isConfigured = !!activeKey;
+      let maskedKey = '';
+      if (isConfigured) {
+        if (activeKey.length > 8) {
+          maskedKey = activeKey.slice(0, 4) + '...' + activeKey.slice(-4);
+        } else {
+          maskedKey = '****';
+        }
+      }
+      return sendJson(res, 200, {
+        gemini_configured: isConfigured,
+        gemini_key_source: envKey ? 'ENV' : (dbKey ? 'DATABASE' : 'NONE'),
+        gemini_key_masked: maskedKey
+      });
+    }
+
+    if (pathname === '/api/settings' && method === 'POST') {
+      const currentUser = getAuthenticatedUser(req);
+      if (!currentUser || currentUser.role !== 'ADMIN') {
+        return sendJson(res, 403, { error: 'Chỉ Admin mới có quyền thay đổi cấu hình hệ thống' });
+      }
+
+      const body = await parseRequestBody(req);
+      if (body.gemini_api_key !== undefined) {
+        const keyVal = (body.gemini_api_key || '').trim();
+        if (keyVal) {
+          db.prepare(`
+            INSERT INTO system_settings (key, value, updated_at) 
+            VALUES ('gemini_api_key', ?, datetime('now', 'localtime'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+          `).run(keyVal);
+        } else {
+          db.prepare("DELETE FROM system_settings WHERE key = 'gemini_api_key'").run();
+        }
+      }
+
+      return sendJson(res, 200, { success: true, message: 'Đã lưu cấu hình hệ thống thành công' });
+    }
+
+    if (pathname === '/api/ai/recognize-plate' && method === 'POST') {
+      const body = await parseRequestBody(req);
+      const image = body.image || '';
+      if (!image) {
+        return sendJson(res, 400, { error: 'Vui lòng cung cấp dữ liệu hình ảnh' });
+      }
+
+      const row = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_api_key'").get();
+      const apiKey = process.env.GEMINI_API_KEY || (row ? row.value : '');
+
+      if (!apiKey) {
+        return sendJson(res, 200, {
+          success: false,
+          fallback: true,
+          error: 'NO_API_KEY',
+          message: 'Chưa cấu hình API Key Gemini. Tự động chuyển sang OCR thiết bị (Offline).'
+        });
+      }
+
+      let base64Data = image;
+      let mimeType = 'image/jpeg';
+      if (image.startsWith('data:')) {
+        const match = image.match(/^data:([^;]+);base64,(.+)$/s);
+        if (match) {
+          mimeType = match[1];
+          base64Data = match[2];
+        }
+      }
+
+      try {
+        const result = await callGeminiLicensePlate(apiKey, base64Data, mimeType);
+        if (result && result.plate) {
+          return sendJson(res, 200, {
+            success: true,
+            plate: result.plate,
+            confidence: result.confidence || 0.95,
+            engine: 'gemini',
+            vehicle_type: result.vehicle_type || '',
+            notes: result.notes || 'Nhận diện thành công qua Google Gemini AI'
+          });
+        } else {
+          return sendJson(res, 200, {
+            success: false,
+            fallback: true,
+            error: 'NOT_FOUND',
+            message: result?.notes || 'Không phát hiện rõ biển số. Thử lại với OCR thiết bị.'
+          });
+        }
+      } catch (err) {
+        console.warn('[Gemini AI OCR Error]:', err.message);
+        return sendJson(res, 200, {
+          success: false,
+          fallback: true,
+          error: 'API_ERROR',
+          message: 'Lỗi kết nối Gemini AI (' + err.message + '). Tự động chuyển sang OCR thiết bị.'
+        });
       }
     }
 

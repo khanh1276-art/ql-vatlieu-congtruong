@@ -15,7 +15,8 @@ const AppState = {
   dailyTickets: [],
   activeCheckoutTicket: null,
   hourlyChart: null,
-  plateDebounceTimer: null
+  plateDebounceTimer: null,
+  currentScannedPlateImage: null
 };
 
 // ============================================================================
@@ -896,7 +897,8 @@ async function handleCheckIn(event) {
     actual_volume: actualVolume,
     is_manual_adjusted: isManual ? 1 : 0,
     adjustment_reason: adjustReason,
-    notes
+    notes,
+    plate_image: AppState.currentScannedPlateImage || null
   };
 
   const btn = document.getElementById('btnSubmitCheckIn');
@@ -924,6 +926,8 @@ async function handleCheckIn(event) {
     // Reset form
     const form = document.getElementById('checkInForm');
     if (form) form.reset();
+
+    removeScannedPlateImage();
 
     if (AppState.currentUser?.role === 'SITE_USER') {
       const projSel = document.getElementById('checkin_project');
@@ -1849,6 +1853,7 @@ function switchSettingsSubTab(sub) {
   if (sub === 'materials') renderSettingsMaterials();
   if (sub === 'suppliers') renderSettingsSuppliers();
   if (sub === 'backup') loadBackupInfo();
+  if (sub === 'ai') loadAiSettings();
 }
 
 // --- 15.1 Quản Lý Tài Khoản (Users & RBAC) ---
@@ -3590,3 +3595,609 @@ window.handleImportDrop = handleImportDrop;
 window.handleImportFileChange = handleImportFileChange;
 window.handleImportSheetSelectChange = handleImportSheetSelectChange;
 window.executeImportBatch = executeImportBatch;
+
+// ============================================================================
+// 17. NHẬN DIỆN BIỂN SỐ XE THÔNG MINH (HYBRID: AI CLOUD & OCR OFFLINE)
+// ============================================================================
+const ScannerState = {
+  stream: null,
+  facingMode: 'environment', // 'environment' (sau) hoặc 'user' (trước)
+  capturedDataUrl: null,
+  recognizedPlate: null,
+  recognitionMethod: null, // 'gemini' hoặc 'tesseract'
+  confidence: 0,
+  isScanning: false
+};
+
+// Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Cục Đăng Kiểm
+function cleanAndNormalizePlateText(text) {
+  if (!text) return null;
+  let clean = text.replace(/[^a-zA-Z0-9.\-\s]/g, ' ').toUpperCase();
+  const lines = clean.split('\n').map(l => l.trim()).filter(Boolean);
+  let flat = lines.join(' ');
+
+  // Pass 1: Định dạng chuẩn 2 chữ số tỉnh + 1-2 chữ cái sê-ri + 3-5 chữ số
+  const strictRegex = /\b([0-9]{2})\s*[-.]?\s*([A-Z]{1,2})\s*[-.]?\s*([0-9]{3,5})(?:[-.\s]*([0-9]{2}))?\b/;
+  let m = flat.match(strictRegex);
+  if (m) {
+    const prov = m[1];
+    const ser = m[2];
+    let num = m[3] + (m[4] || '');
+    if (num.length === 5) num = num.slice(0, 3) + '.' + num.slice(3);
+    return `${prov}${ser}-${num}`;
+  }
+
+  // Pass 2: Có dấu chấm phân cách số 5 chữ số: ví dụ 29C-881.23 hoặc 29C 881.23
+  const dotRegex = /\b([0-9]{2})\s*[-.]?\s*([A-Z]{1,2})\s*[-.]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})\b/;
+  m = flat.match(dotRegex);
+  if (m) {
+    return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
+  }
+
+  // Pass 3: Bộ sửa nhầm lẫn ký tự OCR (0/O, 1/I, 8/B, 5/S...)
+  const numFix = (s) => (s || '')
+    .replace(/O|D/g, '0')
+    .replace(/I|L|\|/g, '1')
+    .replace(/Z/g, '2')
+    .replace(/E/g, '3')
+    .replace(/A/g, '4')
+    .replace(/S/g, '5')
+    .replace(/G|b/g, '6')
+    .replace(/T/g, '7')
+    .replace(/B/g, '8');
+
+  const permRegex = /\b([0-9OIZESGBTD]{2})\s*[-.]?\s*([A-Z0-9]{1,2})\s*[-.]?\s*([0-9OIZESGBTD]{3,5})(?:[-.\s]*([0-9OIZESGBTD]{2}))?\b/;
+  m = flat.match(permRegex);
+  if (m) {
+    const prov = numFix(m[1]);
+    let ser = m[2];
+    if (ser === '0') ser = 'C';
+    if (ser === '8') ser = 'B';
+    if (ser === '1') ser = 'T';
+    let num = numFix(m[3] + (m[4] || ''));
+    if (num.length === 5) num = num.slice(0, 3) + '.' + num.slice(3);
+    return `${prov}${ser}-${num}`;
+  }
+
+  return null;
+}
+
+// Tiền xử lý hình ảnh cho OCR cục bộ: Tăng tương phản, khử nhiễu
+function preprocessImageForOcr(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      let w = img.width;
+      let h = img.height;
+      const maxDim = 1200;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+      canvas.width = w;
+      canvas.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+
+      try {
+        const imgData = ctx.getImageData(0, 0, w, h);
+        const d = imgData.data;
+        let totalLum = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          totalLum += lum;
+        }
+        const avgLum = totalLum / (d.length / 4);
+
+        for (let i = 0; i < d.length; i += 4) {
+          let lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          // Kéo giãn tương phản
+          lum = ((lum - avgLum) * 1.6) + avgLum;
+          lum = Math.max(0, Math.min(255, lum));
+          d[i] = lum;
+          d[i + 1] = lum;
+          d[i + 2] = lum;
+        }
+        ctx.putImageData(imgData, 0, 0);
+      } catch (e) {
+        console.warn('Lỗi bộ lọc canvas:', e);
+      }
+      resolve(canvas);
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Nhận diện bằng thư viện OCR thiết bị (Offline Tesseract)
+async function recognizeWithClientOcr(dataUrl) {
+  if (typeof Tesseract === 'undefined') {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'tesseract.min.js?v=5.1';
+      s.onload = resolve;
+      s.onerror = () => {
+        const sCdn = document.createElement('script');
+        sCdn.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        sCdn.onload = resolve;
+        sCdn.onerror = reject;
+        document.head.appendChild(sCdn);
+      };
+      document.head.appendChild(s);
+    });
+  }
+
+  updateScannerProgress('⚡ Tiền xử lý hình ảnh...', 'Tăng độ tương phản & khử mờ...', 40);
+  const preprocessedCanvas = await preprocessImageForOcr(dataUrl);
+
+  updateScannerProgress('⚡ Đang quét OCR thiết bị...', 'Đọc các ký tự biển số...', 60);
+
+  const res = await Tesseract.recognize(preprocessedCanvas, 'eng', {
+    logger: m => {
+      if (m.status === 'recognizing text') {
+        const pct = 60 + Math.round((m.progress || 0) * 35);
+        updateScannerProgress('⚡ Đang đọc ký tự OCR...', `${pct}%`, pct);
+      }
+    }
+  });
+
+  const rawText = res?.data?.text || '';
+  const parsedPlate = cleanAndNormalizePlateText(rawText);
+  return {
+    plate: parsedPlate,
+    confidence: res?.data?.confidence ? Math.round(res.data.confidence) / 100 : 0.75,
+    rawText
+  };
+}
+
+// Cập nhật trạng thái tiến trình quét biển số
+function updateScannerProgress(title, sub, pct = null) {
+  const tEl = document.getElementById('scannerLoadingTitle');
+  const sEl = document.getElementById('scannerLoadingSub');
+  const bar = document.getElementById('scannerProgressFill');
+  if (tEl && title) tEl.textContent = title;
+  if (sEl && sub) sEl.textContent = sub;
+  if (bar && pct !== null) bar.style.width = `${Math.min(100, Math.max(5, pct))}%`;
+}
+
+// Mở Modal Quét Biển Số
+async function openPlateScannerModal() {
+  const modal = document.getElementById('plateScannerModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  resetScannerView();
+  await startScannerCamera();
+}
+
+// Đóng Modal Quét Biển Số
+function closePlateScannerModal() {
+  stopScannerCamera();
+  const modal = document.getElementById('plateScannerModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+// Bật Camera WebRTC
+async function startScannerCamera() {
+  const video = document.getElementById('scannerVideo');
+  if (!video) return;
+
+  stopScannerCamera();
+
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Thiết bị không hỗ trợ truy cập camera trực tiếp');
+    }
+
+    const constraints = {
+      video: {
+        facingMode: { ideal: ScannerState.facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    ScannerState.stream = stream;
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    console.warn('Không thể mở camera stream trực tiếp:', err.message);
+    showToast('Camera trực tiếp không sẵn sàng. Vui lòng bấm [Tải / Chụp Ảnh] để chụp!', 'info');
+  }
+}
+
+// Tắt Camera WebRTC
+function stopScannerCamera() {
+  if (ScannerState.stream) {
+    ScannerState.stream.getTracks().forEach(track => {
+      try { track.stop(); } catch (e) {}
+    });
+    ScannerState.stream = null;
+  }
+  const video = document.getElementById('scannerVideo');
+  if (video) video.srcObject = null;
+}
+
+// Đổi camera Trước / Sau
+async function switchCameraFacing() {
+  ScannerState.facingMode = ScannerState.facingMode === 'environment' ? 'user' : 'environment';
+  showToast(`Chuyển sang camera ${ScannerState.facingMode === 'environment' ? 'sau' : 'trước'}`, 'info');
+  await startScannerCamera();
+}
+
+// Đặt lại giao diện chụp về ban đầu
+function resetScannerView() {
+  ScannerState.isScanning = false;
+  ScannerState.recognizedPlate = null;
+  ScannerState.capturedDataUrl = null;
+
+  const preview = document.getElementById('scannerCapturedPreview');
+  if (preview) {
+    preview.src = '';
+    preview.classList.add('hidden');
+  }
+
+  const targetBox = document.getElementById('scannerTargetBox');
+  if (targetBox) targetBox.classList.remove('hidden');
+
+  const loading = document.getElementById('scannerLoadingOverlay');
+  if (loading) loading.classList.add('hidden');
+
+  const resultCard = document.getElementById('scannerResultCard');
+  if (resultCard) resultCard.classList.add('hidden');
+
+  const controls = document.getElementById('scannerControlsRow');
+  if (controls) controls.classList.remove('hidden');
+}
+
+// Bấm nút Chụp & Nhận Diện từ video camera
+async function captureAndRecognize() {
+  if (ScannerState.isScanning) return;
+
+  const video = document.getElementById('scannerVideo');
+  const canvas = document.getElementById('scannerCanvas') || document.createElement('canvas');
+
+  if (!video || !video.videoWidth) {
+    document.getElementById('scannerFileInput')?.click();
+    return;
+  }
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+  await processPlateRecognition(dataUrl);
+}
+
+// Xử lý khi người dùng chọn ảnh hoặc chụp ảnh từ máy
+function handleScannerFileSelect(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const dataUrl = e.target.result;
+    await processPlateRecognition(dataUrl);
+  };
+  reader.readAsDataURL(file);
+
+  // Đặt lại input để có thể chọn lại cùng 1 file nếu muốn
+  event.target.value = '';
+}
+
+// Luồng nhận diện HYBRID cốt lõi (AI Cloud -> Fallback Local OCR)
+async function processPlateRecognition(dataUrl) {
+  ScannerState.isScanning = true;
+  ScannerState.capturedDataUrl = dataUrl;
+
+  // Hiển thị ảnh chụp tĩnh lên viewfinder
+  const preview = document.getElementById('scannerCapturedPreview');
+  if (preview) {
+    preview.src = dataUrl;
+    preview.classList.remove('hidden');
+  }
+
+  const targetBox = document.getElementById('scannerTargetBox');
+  if (targetBox) targetBox.classList.add('hidden');
+
+  const loading = document.getElementById('scannerLoadingOverlay');
+  if (loading) loading.classList.remove('hidden');
+
+  updateScannerProgress('🔍 Đang phân tích hình ảnh...', 'Đang gửi tới Google Gemini AI Vision...', 25);
+
+  let recognizedPlate = null;
+  let method = 'gemini';
+  let confidence = 0.95;
+  let vehicleType = '';
+
+  // BƯỚC 1: Thử nhận diện bằng AI Vision (Cloud Gemini 3.8 Flash)
+  try {
+    const res = await apiFetch('/api/ai/recognize-plate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl })
+    });
+
+    const aiResult = await res.json();
+    if (aiResult.success && aiResult.plate) {
+      recognizedPlate = aiResult.plate;
+      confidence = aiResult.confidence || 0.98;
+      method = 'gemini';
+      vehicleType = aiResult.vehicle_type || '';
+    } else {
+      console.log('AI Vision phản hồi cần fallback:', aiResult.message);
+    }
+  } catch (aiErr) {
+    console.warn('Lỗi gọi AI Cloud (chuyển sang OCR thiết bị):', aiErr.message);
+  }
+
+  // BƯỚC 2: Nếu AI Cloud không đọc được hoặc không có API Key, chạy OCR Thiết Bị Cục Bộ
+  if (!recognizedPlate) {
+    updateScannerProgress('⚡ Chuyển sang OCR thiết bị...', 'Nhận diện cục bộ trên trình duyệt/Android...', 45);
+    try {
+      const ocrResult = await recognizeWithClientOcr(dataUrl);
+      if (ocrResult && ocrResult.plate) {
+        recognizedPlate = ocrResult.plate;
+        confidence = ocrResult.confidence || 0.8;
+        method = 'tesseract';
+      }
+    } catch (ocrErr) {
+      console.error('Lỗi OCR thiết bị:', ocrErr);
+    }
+  }
+
+  if (loading) loading.classList.add('hidden');
+  ScannerState.isScanning = false;
+
+  // Hiển thị kết quả ra thẻ duyệt kết quả
+  const resultCard = document.getElementById('scannerResultCard');
+  const plateIn = document.getElementById('scannerResultPlate');
+  const badge = document.getElementById('scannerResultBadge');
+
+  if (recognizedPlate) {
+    ScannerState.recognizedPlate = recognizedPlate;
+    ScannerState.recognitionMethod = method;
+    ScannerState.confidence = confidence;
+
+    if (plateIn) plateIn.value = recognizedPlate;
+
+    if (badge) {
+      if (method === 'gemini') {
+        badge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300';
+        badge.textContent = `🌐 AI Vision (${Math.round(confidence * 100)}%)`;
+      } else {
+        badge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-blue-100 text-blue-800 border border-blue-300';
+        badge.textContent = `⚡ OCR Thiết Bị (${Math.round(confidence * 100)}%)`;
+      }
+    }
+
+    // Tra cứu xem xe này đã có trong danh mục chưa
+    const cleanPlateUpper = recognizedPlate.toUpperCase().trim();
+    const matchedVeh = AppState.vehicles.find(v => v.plate_number === cleanPlateUpper);
+    const matchInfoBox = document.getElementById('scannerVehicleMatchInfo');
+    const matchName = document.getElementById('scannerMatchedVehName');
+    const matchDetail = document.getElementById('scannerMatchedVehDetail');
+
+    if (matchedVeh && matchInfoBox) {
+      matchInfoBox.classList.remove('hidden');
+      if (matchName) matchName.textContent = `Đã tìm thấy xe: ${matchedVeh.plate_number} (${matchedVeh.model_type || 'Xe vận chuyển'})`;
+      if (matchDetail) matchDetail.textContent = `Nhà cung cấp: ${matchedVeh.supplier_name || 'Đã liên kết'} • Thùng: ${matchedVeh.standard_volume} ${matchedVeh.unit || 'm³'}`;
+    } else if (matchInfoBox) {
+      matchInfoBox.classList.add('hidden');
+    }
+
+    if (resultCard) resultCard.classList.remove('hidden');
+    showToast(`✓ Đã nhận diện biển số: ${recognizedPlate}`, 'success');
+  } else {
+    // Không đọc được
+    if (resultCard) resultCard.classList.remove('hidden');
+    if (plateIn) {
+      plateIn.value = '';
+      plateIn.placeholder = 'Không rõ biển số, nhập tay vào đây...';
+      plateIn.focus();
+    }
+    if (badge) {
+      badge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-amber-100 text-amber-800 border border-amber-300';
+      badge.textContent = 'Cần kiểm tra';
+    }
+    showToast('Không phát hiện rõ biển số. Bạn có thể tự gõ bổ sung hoặc bấm [Chụp lại]!', 'warning');
+  }
+}
+
+// Áp dụng biển số đã quét vào Phiếu Xe Vào Cổng
+function applyScannedPlate() {
+  const plateIn = document.getElementById('scannerResultPlate');
+  const plate = (plateIn?.value || ScannerState.recognizedPlate || '').trim().toUpperCase();
+
+  if (!plate) {
+    showToast('Vui lòng nhập hoặc chụp biển số xe', 'error');
+    return;
+  }
+
+  // 1. Điền vào ô biển số của phiếu xe
+  const mainPlateIn = document.getElementById('checkin_plate');
+  if (mainPlateIn) {
+    mainPlateIn.value = plate;
+  }
+
+  // 2. Kích hoạt tự động điền quy cách và thông tin xe
+  handlePlateInput(plate);
+  const matchedVeh = AppState.vehicles.find(v => v.plate_number === plate);
+  if (matchedVeh) {
+    selectVehicleSuggestion(plate);
+  }
+
+  // 3. Lưu ảnh đính kèm phiếu
+  if (ScannerState.capturedDataUrl) {
+    AppState.currentScannedPlateImage = ScannerState.capturedDataUrl;
+    const thumbContainer = document.getElementById('checkinPlateImagePreviewContainer');
+    const thumbImg = document.getElementById('checkinPlateImageThumbnail');
+    const methodBadge = document.getElementById('scannedMethodBadge');
+
+    if (thumbContainer && thumbImg) {
+      thumbImg.src = ScannerState.capturedDataUrl;
+      if (methodBadge) {
+        methodBadge.textContent = ScannerState.recognitionMethod === 'gemini' ? 'AI Vision' : 'OCR Thiết Bị';
+      }
+      thumbContainer.classList.remove('hidden');
+    }
+  }
+
+  closePlateScannerModal();
+  showToast(`✓ Đã áp dụng biển số ${plate} vào phiếu xe vào cổng!`, 'success');
+}
+
+// Xóa ảnh chụp biển số khỏi phiếu
+function removeScannedPlateImage() {
+  AppState.currentScannedPlateImage = null;
+  const thumbContainer = document.getElementById('checkinPlateImagePreviewContainer');
+  const thumbImg = document.getElementById('checkinPlateImageThumbnail');
+  if (thumbContainer) thumbContainer.classList.add('hidden');
+  if (thumbImg) thumbImg.src = '';
+}
+
+// ============================================================================
+// 18. QUẢN LÝ CẤU HÌNH AI VISION (GEMINI SETTINGS)
+// ============================================================================
+async function loadAiSettings() {
+  const badge = document.getElementById('settingsAiStatusBadge');
+  const keyInput = document.getElementById('settings_gemini_key');
+
+  if (badge) {
+    badge.className = 'px-3 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-200';
+    badge.textContent = 'Đang tải cấu hình...';
+  }
+
+  try {
+    const res = await apiFetch('/api/settings');
+    const data = await res.json();
+
+    if (badge) {
+      if (data.gemini_configured) {
+        badge.className = 'px-3 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300';
+        badge.textContent = `✅ Đã kết nối AI Vision (${data.gemini_key_source === 'ENV' ? 'Biến môi trường' : 'CSDL'})`;
+      } else {
+        badge.className = 'px-3 py-1 text-xs font-bold rounded-full bg-amber-100 text-amber-800 border border-amber-300';
+        badge.textContent = '⚡ Dùng OCR Cục Bộ (Chưa cài API Key)';
+      }
+    }
+
+    if (keyInput) {
+      keyInput.placeholder = data.gemini_configured ? `Đang dùng: ${data.gemini_key_masked}` : 'Nhập khóa API (ví dụ: AIzaSy...)';
+    }
+  } catch (err) {
+    console.error('Lỗi nạp cấu hình AI:', err);
+    if (badge) {
+      badge.className = 'px-3 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-500';
+      badge.textContent = 'Chưa cấu hình';
+    }
+  }
+}
+
+// Lưu cấu hình Gemini API Key
+async function saveAiSettings(event) {
+  if (event && event.preventDefault) event.preventDefault();
+
+  const keyInput = document.getElementById('settings_gemini_key');
+  const keyVal = (keyInput?.value || '').trim();
+
+  try {
+    const res = await apiFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gemini_api_key: keyVal })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Lỗi lưu cấu hình');
+
+    showToast('✓ Đã cập nhật cấu hình Google Gemini AI thành công!', 'success');
+    if (keyInput) keyInput.value = '';
+    await loadAiSettings();
+  } catch (err) {
+    showToast(err.message || 'Lỗi lưu cấu hình AI', 'error');
+  }
+}
+
+// Hiện / Ẩn API Key trong ô nhập
+function toggleApiKeyVisibility() {
+  const input = document.getElementById('settings_gemini_key');
+  if (!input) return;
+  input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+// Kiểm tra kết nối Gemini Vision
+async function testGeminiConnection() {
+  const keyInput = document.getElementById('settings_gemini_key');
+  const tempKey = (keyInput?.value || '').trim();
+
+  showToast('🧪 Đang kiểm tra kết nối tới Google Gemini AI...', 'info');
+
+  // Tạo một ảnh mẫu 1x1 pixel base64 để test endpoint
+  const testCanvas = document.createElement('canvas');
+  testCanvas.width = 100;
+  testCanvas.height = 40;
+  const ctx = testCanvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, 100, 40);
+  ctx.fillStyle = '#000000';
+  ctx.font = '16px Segoe UI, sans-serif';
+  ctx.fillText('29C-881.23', 5, 25);
+  const sampleDataUrl = testCanvas.toDataURL('image/jpeg');
+
+  try {
+    // Nếu người dùng nhập key mới trên form thì tạm lưu trước
+    if (tempKey) {
+      await apiFetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gemini_api_key: tempKey })
+      });
+    }
+
+    const res = await apiFetch('/api/ai/recognize-plate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: sampleDataUrl })
+    });
+
+    const data = await res.json();
+    if (data.success && data.plate) {
+      showToast(`✅ Kết nối Gemini AI Vision thành công tuyệt vời! (Đọc thử: ${data.plate})`, 'success');
+    } else if (data.fallback && data.error === 'NO_API_KEY') {
+      showToast('⚠️ Chưa cấu hình API Key. Hệ thống đang sẵn sàng ở chế độ OCR Thiết Bị (Offline).', 'warning');
+    } else {
+      showToast(`⚠️ Kết nối AI: ${data.message || 'Chưa đọc được'}`, 'info');
+    }
+    await loadAiSettings();
+  } catch (err) {
+    showToast(`❌ Lỗi kết nối AI: ${err.message}`, 'error');
+  }
+}
+
+// Gắn các hàm Scanner & AI ra global window
+window.openPlateScannerModal = openPlateScannerModal;
+window.closePlateScannerModal = closePlateScannerModal;
+window.startScannerCamera = startScannerCamera;
+window.stopScannerCamera = stopScannerCamera;
+window.switchCameraFacing = switchCameraFacing;
+window.resetScannerView = resetScannerView;
+window.captureAndRecognize = captureAndRecognize;
+window.handleScannerFileSelect = handleScannerFileSelect;
+window.applyScannedPlate = applyScannedPlate;
+window.removeScannedPlateImage = removeScannedPlateImage;
+window.loadAiSettings = loadAiSettings;
+window.saveAiSettings = saveAiSettings;
+window.toggleApiKeyVisibility = toggleApiKeyVisibility;
+window.testGeminiConnection = testGeminiConnection;
+

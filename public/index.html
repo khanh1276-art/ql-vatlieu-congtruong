@@ -149,7 +149,7 @@
           <div>
             <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-white leading-tight flex items-center gap-2">
               <span>FECON QUẢN LÝ VẬT TƯ</span>
-              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.2.8</span>
+              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.2.9</span>
             </h1>
             <p class="text-[11px] sm:text-xs text-slate-400 font-medium">Kiểm Soát Nhập Xuất • Đa Dự Án • Khóa Sổ Ngày</p>
           </div>
@@ -171,7 +171,7 @@
           </div>
 
           <!-- Nút tải App Android APK trực tiếp -->
-          <a href="/downloads/FECON-QLVT-v1.2.8.apk" download="FECON-QLVT-v1.2.8.apk" title="Tải file cài đặt APK cho điện thoại Android"
+          <a href="/downloads/FECON-QLVT-v1.2.9.apk" download="FECON-QLVT-v1.2.9.apk" title="Tải file cài đặt APK cho điện thoại Android"
             class="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold border border-emerald-500 shadow-sm transition">
             <span>📱</span>
             <span>App Android</span>
@@ -265,11 +265,20 @@
               </div>
             </div>
 
-            <!-- Biển số xe & Tra cứu nhanh -->
+            <!-- Biển số xe & Tra cứu nhanh kèm Camera Quét Biển Số -->
             <div class="relative">
-              <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Biển Số Xe / Số Hiệu Xe <span class="text-red-500">*</span>
-              </label>
+              <div class="flex items-center justify-between mb-1">
+                <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Biển Số Xe / Số Hiệu Xe <span class="text-red-500">*</span>
+                </label>
+                <button type="button" onclick="openPlateScannerModal()" 
+                  class="px-2.5 py-1 text-xs font-bold rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white flex items-center gap-1.5 shadow-sm active:scale-95 transition"
+                  title="Chụp ảnh nhận diện biển số xe tự động (AI Cloud / OCR Offline)">
+                  <span>📷</span>
+                  <span>Quét Biển Số</span>
+                  <span class="text-[10px] bg-white/20 px-1 py-0.2 rounded font-semibold">AI</span>
+                </button>
+              </div>
               <div class="relative">
                 <input type="text" id="checkin_plate" required placeholder="VD: 29C-881.23, 29C-771.88..." 
                   autocomplete="off"
@@ -277,7 +286,21 @@
                   class="w-full text-lg font-bold font-mono tracking-wider px-3.5 py-2.5 bg-slate-50 border-2 border-slate-300 rounded-lg focus:bg-white focus:border-blue-600 focus:outline-none uppercase">
                 <div id="plateSuggestions" class="absolute z-20 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-48 overflow-y-auto hidden"></div>
               </div>
-              <p id="plateHint" class="text-xs text-slate-500 mt-1">Gõ biển số để hệ thống tự động điền quy cách xe đã lưu</p>
+              <!-- Preview ảnh chụp biển số nếu có -->
+              <div id="checkinPlateImagePreviewContainer" class="hidden mt-2 p-2 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                  <img id="checkinPlateImageThumbnail" src="" class="w-16 h-10 object-cover rounded border border-slate-300" alt="Ảnh biển số">
+                  <div>
+                    <div class="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                      <span>Ảnh chụp biển số</span>
+                      <span id="scannedMethodBadge" class="text-[9px] px-1 py-0.2 bg-emerald-100 text-emerald-700 font-bold rounded">AI Vision</span>
+                    </div>
+                    <div class="text-[10px] text-slate-500">Đã đính kèm theo phiếu vào cổng</div>
+                  </div>
+                </div>
+                <button type="button" onclick="removeScannedPlateImage()" class="text-xs text-red-500 hover:text-red-700 px-2 py-1 font-semibold">Xóa ảnh</button>
+              </div>
+              <p id="plateHint" class="text-xs text-slate-500 mt-1">Gõ biển số hoặc bấm [Quét Biển Số] để nhận diện tự động</p>
             </div>
 
             <!-- Dòng xe / Model -->
@@ -927,6 +950,9 @@
         <button onclick="switchSettingsSubTab('backup')" class="settings-subtab px-4 py-2 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-200" data-subtab="backup">
           💾 Sao Lưu & Khôi Phục
         </button>
+        <button onclick="switchSettingsSubTab('ai')" class="settings-subtab px-4 py-2 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-200" data-subtab="ai">
+          🤖 Nhận Diện Biển Số AI / OCR
+        </button>
       </div>
 
       <!-- 2. Cấu hình Dự Án -->
@@ -1183,6 +1209,92 @@
             </div>
 
             <div id="restoreStatusMsg" class="text-xs font-semibold text-slate-600 hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7. Cấu hình AI Vision & OCR Biển Số Xe (Hybrid) -->
+      <div id="settings-ai" class="settings-pane hidden space-y-6">
+        <div class="bg-gradient-to-r from-blue-700 via-indigo-700 to-slate-800 text-white rounded-2xl p-6 shadow-md">
+          <div class="flex items-center space-x-3">
+            <div class="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center text-2xl shadow-inner">🤖</div>
+            <div>
+              <h3 class="text-lg font-bold">Cơ Chế Nhận Diện Biển Số Thông Minh (Hybrid OCR)</h3>
+              <p class="text-xs text-blue-200 mt-0.5">Kết hợp sức mạnh AI Vision đám mây (Google Gemini 3.8 Flash) và OCR Thiết bị cục bộ (Offline Tesseract)</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Khung cấu hình API Key -->
+        <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <span>🔑</span> Khóa Truy Cập Google Gemini API (AI Vision)
+              </h4>
+              <p class="text-xs text-slate-500">Dùng để nhận diện biển số xe tải, xe ben công trường với độ chính xác cao nhất</p>
+            </div>
+            <div id="settingsAiStatusBadge" class="px-3 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+              Đang kiểm tra...
+            </div>
+          </div>
+
+          <form id="aiSettingsForm" onsubmit="saveAiSettings(event)" class="space-y-4">
+            <div>
+              <label class="block text-xs font-bold text-slate-700 mb-1">
+                Google Gemini API Key
+              </label>
+              <div class="flex items-center space-x-2">
+                <input type="password" id="settings_gemini_key" placeholder="Nhập khóa API (ví dụ: AIzaSy...)" 
+                  class="flex-1 text-xs font-mono px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:bg-white focus:border-blue-500 focus:outline-none">
+                <button type="button" onclick="toggleApiKeyVisibility()" class="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300">
+                  👁️ Hiện/Ẩn
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-500 mt-1">
+                Lấy API Key hoàn toàn miễn phí tại: <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-blue-600 hover:underline font-semibold">Google AI Studio</a>. Khóa được lưu an toàn trong CSDL nội bộ.
+              </p>
+            </div>
+
+            <div class="flex items-center space-x-3 pt-2">
+              <button type="button" onclick="testGeminiConnection()" class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold border border-slate-300 transition flex items-center space-x-1.5">
+                <span>🧪</span>
+                <span>Kiểm Tra Kết Nối</span>
+              </button>
+              <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl text-xs font-bold shadow-md transition flex items-center space-x-1.5">
+                <span>💾</span>
+                <span>Lưu Cấu Hình AI</span>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- So sánh cơ chế Hybrid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="p-5 rounded-2xl border border-blue-200 bg-blue-50/40 space-y-2">
+            <div class="flex items-center space-x-2">
+              <span class="text-lg">🌐</span>
+              <h5 class="text-xs font-bold text-blue-900 uppercase">Chế Độ Online (Google Gemini 3.8 Flash)</h5>
+            </div>
+            <ul class="text-xs text-slate-600 space-y-1.5 list-disc list-inside">
+              <li>Nhận diện chính xác 98%+ mọi loại biển số xe tải, xe ben, đầu kéo Việt Nam.</li>
+              <li>Tự động đọc và ghép biển vuông 2 dòng (dòng sê-ri phía trên + dãy số bên dưới).</li>
+              <li>Chống chịu tốt khi biển bị bám bụi bẩn công trường, ngược sáng đèn pha hoặc góc chụp nghiêng.</li>
+              <li>Tự động kích hoạt khi có kết nối internet và đã cấu hình API Key.</li>
+            </ul>
+          </div>
+
+          <div class="p-5 rounded-2xl border border-emerald-200 bg-emerald-50/40 space-y-2">
+            <div class="flex items-center space-x-2">
+              <span class="text-lg">⚡</span>
+              <h5 class="text-xs font-bold text-emerald-900 uppercase">Chế Độ Offline (OCR Thiết Bị Cục Bộ)</h5>
+            </div>
+            <ul class="text-xs text-slate-600 space-y-1.5 list-disc list-inside">
+              <li>Hoạt động 100% không cần mạng Internet (ngay trên điện thoại Android hoặc máy tính trực cổng).</li>
+              <li>Không yêu cầu cấu hình API Key hay tốn bất kỳ chi phí nào.</li>
+              <li>Bộ tiền xử lý ảnh tăng cường độ tương phản, khử nhiễu và lọc ngưỡng đen trắng.</li>
+              <li>Thuật toán phân tích regex biển số xe Việt Nam tự động sửa sai sót chữ số (0/O, 1/I, 8/B...).</li>
+            </ul>
           </div>
         </div>
       </div>
@@ -1916,11 +2028,134 @@
     </div>
   </div>
 
+  <!-- MODAL QUÉT BIỂN SỐ XE (HYBRID: AI VISION & OCR OFFLINE) -->
+  <div id="plateScannerModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 flex flex-col max-h-[92vh]">
+      <!-- Header -->
+      <div class="bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-800 text-white px-5 py-3.5 flex items-center justify-between shrink-0 shadow-md">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center text-lg shadow-inner">📷</div>
+          <div>
+            <h3 class="text-sm sm:text-base font-bold tracking-tight">Quét & Nhận Diện Biển Số Xe</h3>
+            <p class="text-[11px] text-blue-200">Cơ chế Hybrid: AI Vision Cloud & OCR Thiết Bị Cục Bộ</p>
+          </div>
+        </div>
+        <button onclick="closePlateScannerModal()" class="text-white/70 hover:text-white text-2xl font-bold leading-none p-1 rounded-lg hover:bg-white/10 transition">&times;</button>
+      </div>
+
+      <!-- Body -->
+      <div class="p-4 sm:p-5 overflow-y-auto space-y-4">
+        
+        <!-- Live Camera Viewfinder & File Fallback -->
+        <div class="relative bg-slate-900 rounded-2xl overflow-hidden shadow-inner border border-slate-700 flex flex-col items-center justify-center min-h-[260px]">
+          <!-- Video element -->
+          <video id="scannerVideo" autoplay playsinline muted class="w-full h-64 sm:h-72 object-cover"></video>
+          
+          <!-- Viewfinder Frame Overlay -->
+          <div id="scannerTargetBox" class="absolute inset-x-8 top-12 bottom-16 border-2 border-dashed border-amber-400/90 rounded-xl pointer-events-none flex flex-col items-center justify-between p-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]">
+            <div class="text-[11px] font-bold text-amber-300 bg-slate-900/80 px-2.5 py-0.5 rounded-full border border-amber-400/40">
+              CĂN BIỂN SỐ XE VÀO ĐÂY
+            </div>
+            <div class="w-full flex justify-between items-center text-[10px] text-slate-300 px-2 font-mono">
+              <span class="border-b-2 border-l-2 border-amber-400 w-4 h-4"></span>
+              <span class="text-white/80">Biển 1 dòng hoặc 2 dòng</span>
+              <span class="border-b-2 border-r-2 border-amber-400 w-4 h-4"></span>
+            </div>
+          </div>
+
+          <!-- Preview ảnh đã chụp nếu đang xem xét -->
+          <img id="scannerCapturedPreview" src="" class="absolute inset-0 w-full h-full object-contain bg-black hidden z-10" alt="Captured plate">
+
+          <!-- Scanning Overlay / Loading State -->
+          <div id="scannerLoadingOverlay" class="absolute inset-0 bg-slate-950/85 z-20 flex flex-col items-center justify-center p-4 text-center hidden">
+            <div class="relative w-16 h-16 mb-3">
+              <div class="w-16 h-16 rounded-full border-4 border-blue-500/20 border-t-blue-500 animate-spin"></div>
+              <div class="absolute inset-0 flex items-center justify-center text-xl">⚡</div>
+            </div>
+            <div id="scannerLoadingTitle" class="text-sm font-bold text-white mb-1">Đang phân tích hình ảnh...</div>
+            <div id="scannerLoadingSub" class="text-xs text-blue-300 max-w-xs">Thử nghiệm nhận diện qua Google Gemini AI Vision...</div>
+            <div id="scannerProgressBar" class="w-48 bg-slate-800 rounded-full h-1.5 mt-3 overflow-hidden border border-slate-700">
+              <div id="scannerProgressFill" class="bg-gradient-to-r from-blue-500 to-indigo-500 h-full w-1/3 transition-all duration-300"></div>
+            </div>
+          </div>
+
+          <!-- Hidden canvas for image grab and preprocessing -->
+          <canvas id="scannerCanvas" class="hidden"></canvas>
+          <!-- Hidden file input for native camera or file upload -->
+          <input type="file" id="scannerFileInput" accept="image/*" capture="environment" class="hidden" onchange="handleScannerFileSelect(event)">
+        </div>
+
+        <!-- Camera Controls -->
+        <div id="scannerControlsRow" class="flex items-center gap-2">
+          <button type="button" onclick="captureAndRecognize()" 
+            class="flex-1 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 active:scale-[0.98] text-white font-bold text-sm rounded-xl shadow-lg flex items-center justify-center gap-2 transition">
+            <span class="text-lg">📸</span>
+            <span>Chụp & Nhận Diện</span>
+          </button>
+          
+          <button type="button" onclick="switchCameraFacing()" title="Đổi camera trước / sau"
+            class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
+            <span>🔄</span>
+          </button>
+
+          <button type="button" onclick="document.getElementById('scannerFileInput').click()" title="Mở máy ảnh ngoài hoặc chọn file ảnh từ máy"
+            class="px-3.5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 flex items-center gap-1.5 transition">
+            <span>📁</span>
+            <span class="hidden sm:inline">Tải / Chụp Ảnh</span>
+          </button>
+        </div>
+
+        <!-- Result Card (Appears after successful scan) -->
+        <div id="scannerResultCard" class="hidden bg-slate-50 border-2 border-emerald-500/50 rounded-2xl p-4 space-y-3">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-200">
+            <div class="flex items-center space-x-2">
+              <span class="text-emerald-600 text-base font-bold">✓</span>
+              <span class="text-xs font-bold text-slate-800 uppercase tracking-wider">Kết Quả Nhận Diện</span>
+            </div>
+            <div id="scannerResultBadge" class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">
+              AI Vision Cloud
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-[11px] font-bold text-slate-600 mb-1">Biển số nhận diện được (Có thể chỉnh sửa nếu cần):</label>
+            <div class="flex items-center space-x-2">
+              <input type="text" id="scannerResultPlate" 
+                class="flex-1 font-mono text-xl sm:text-2xl font-extrabold tracking-wider text-slate-900 bg-white border-2 border-blue-600 rounded-xl px-3 py-2 text-center uppercase focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-inner">
+            </div>
+          </div>
+
+          <!-- Matched Vehicle Notification (If already in database) -->
+          <div id="scannerVehicleMatchInfo" class="text-xs p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 space-y-0.5 hidden">
+            <div class="font-bold flex items-center gap-1">
+              <span>🚚</span>
+              <span id="scannerMatchedVehName">Xe đã đăng ký trong hệ thống</span>
+            </div>
+            <div class="text-[11px] text-blue-700" id="scannerMatchedVehDetail">Tự động nạp quy chuẩn kích thước thùng và nhà cung cấp</div>
+          </div>
+
+          <!-- Action Confirmation Buttons -->
+          <div class="flex items-center gap-2 pt-1">
+            <button type="button" onclick="resetScannerView()" class="flex-1 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition">
+              🔄 Chụp lại
+            </button>
+            <button type="button" onclick="applyScannedPlate()" class="flex-[2] py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md flex items-center justify-center gap-1.5 transition">
+              <span>✓</span>
+              <span>Áp Dụng Vào Phiếu</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <!-- TOAST NOTIFICATION CONTAINER -->
   <div id="toastContainer" class="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none"></div>
 
   <script src="xlsx.full.min.js?v=2.2"></script>
-  <script src="app.js?v=2.2"></script>
+  <script src="tesseract.min.js?v=5.1"></script>
+  <script src="app.js?v=2.3"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

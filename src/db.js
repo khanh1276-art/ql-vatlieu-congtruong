@@ -139,6 +139,13 @@ function initSchema() {
       FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL,
       FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE SET NULL
     );
+
+    -- Bảng Cài Đặt Hệ Thống (Lưu API Key Gemini, Cấu hình Hybrid OCR, v.v.)
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
   `);
 
   migrateSchema();
@@ -172,6 +179,9 @@ function migrateSchema() {
   }
   if (!ticketCols.includes('unit')) {
     db.exec(`ALTER TABLE tickets ADD COLUMN unit TEXT DEFAULT 'm³';`);
+  }
+  if (!ticketCols.includes('plate_image')) {
+    db.exec(`ALTER TABLE tickets ADD COLUMN plate_image TEXT;`);
   }
 
   const vehicleCols = db.prepare('PRAGMA table_info(vehicles)').all().map(c => c.name);
