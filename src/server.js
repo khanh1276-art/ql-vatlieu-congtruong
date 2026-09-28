@@ -123,6 +123,103 @@ function generateTicketCode(customDateOrString = null) {
   return `${prefix}${String(nextSeq).padStart(4, '0')}`;
 }
 
+// Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Cục Đăng Kiểm
+function cleanAndNormalizePlateText(text) {
+  if (!text) return null;
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
+  const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
+
+  const fixDigits = (s) => (s || '')
+    .replace(/[ODQ]/g, '0')
+    .replace(/[IL|]/g, '1')
+    .replace(/[Z]/g, '2')
+    .replace(/[E]/g, '3')
+    .replace(/[A]/g, '4')
+    .replace(/[S]/g, '5')
+    .replace(/[Gb]/g, '6')
+    .replace(/[T]/g, '7')
+    .replace(/[B]/g, '8');
+
+  // PASS 1: Biển vuông 2 dòng
+  if (rawLines.length >= 2) {
+    for (let i = 0; i < rawLines.length - 1; i++) {
+      const line1 = rawLines[i];
+      const line2 = rawLines[i + 1];
+      const m1 = line1.match(/^([1-9][0-9])([A-Z]{1,2}|[A-Z][0-9])[-.]?$/);
+      if (m1) {
+        const prov = m1[1];
+        const ser = m1[2];
+
+        const mDot = line2.match(/([0-9]{3})\.([0-9]{2})$/);
+        if (mDot) return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
+
+        const digitsOnly = line2.replace(/[^0-9]/g, '');
+        if (digitsOnly.length >= 5) {
+          const last5 = digitsOnly.slice(-5);
+          return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
+        }
+        if (digitsOnly.length === 4) {
+          return `${prov}${ser}-${digitsOnly}`;
+        }
+      }
+    }
+  }
+
+  // PASS 2: Biển 1 dòng
+  const flat = clean.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const r5Dot = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})\b/;
+  let m = flat.match(r5Dot);
+  if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
+
+  const r5Plain = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})([0-9]{2})(?![0-9])\b/;
+  m = flat.match(r5Plain);
+  if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
+
+  const r4 = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{4})(?![0-9.])\b/;
+  m = flat.match(r4);
+  if (m) return `${m[1]}${m[2]}-${m[3]}`;
+
+  // PASS 3: Fallback sửa sai lệch ký tự
+  if (rawLines.length >= 2) {
+    for (let i = 0; i < rawLines.length - 1; i++) {
+      let l1 = rawLines[i];
+      let l2 = rawLines[i + 1];
+      let m1 = l1.match(/^([0-9A-Z]{2})([A-Z0-9]{1,2})[-.]?$/);
+      if (m1) {
+        const prov = fixDigits(m1[1]);
+        let ser = m1[2];
+        if (/^[0-9]+$/.test(ser)) continue;
+
+        const l2Digits = fixDigits(l2).replace(/[^0-9]/g, '');
+        const mDot2 = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})$/);
+        if (mDot2 && /^[1-9][0-9]$/.test(prov)) {
+          return `${prov}${ser}-${fixDigits(mDot2[1])}.${fixDigits(mDot2[2])}`;
+        }
+        if (l2Digits.length >= 5 && /^[1-9][0-9]$/.test(prov)) {
+          const last5 = l2Digits.slice(-5);
+          return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
+        }
+        if (l2Digits.length === 4 && /^[1-9][0-9]$/.test(prov)) {
+          return `${prov}${ser}-${l2Digits}`;
+        }
+      }
+    }
+  }
+
+  const flatPerm = /\b([0-9A-Z]{2})\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9A-Z]{3})\s*[-.]?\s*([0-9A-Z]{2})\b/;
+  m = flat.match(flatPerm);
+  if (m) {
+    const prov = fixDigits(m[1]);
+    const ser = m[2];
+    const num = fixDigits(m[3]) + '.' + fixDigits(m[4]);
+    if (/^[1-9][0-9]$/.test(prov)) {
+      return `${prov}${ser}-${num}`;
+    }
+  }
+
+  return null;
+}
+
 // Tiện ích bóc tách và chuẩn hóa kết quả nhận diện biển số xe từ Gemini AI
 function parseGeminiPlateResult(rawText) {
   if (!rawText) return null;
@@ -138,10 +235,19 @@ function parseGeminiPlateResult(rawText) {
   try {
     const json = JSON.parse(cleaned);
     if (json.plate) {
-      json.plate = String(json.plate).toUpperCase().trim().replace(/\s+/g, '');
+      const normalized = cleanAndNormalizePlateText(String(json.plate)) || String(json.plate).toUpperCase().trim().replace(/\s+/g, '');
+      json.plate = normalized;
     }
     return json;
   } catch (e) {
+    const norm = cleanAndNormalizePlateText(rawText);
+    if (norm) {
+      return {
+        plate: norm,
+        confidence: 0.9,
+        notes: 'Trích xuất biển số chuẩn hóa'
+      };
+    }
     const match = rawText.match(/\b([0-9]{2}[A-Z]{1,2}[-\s]?[0-9]{4,5}(?:\.[0-9]{2})?)\b/i);
     if (match) {
       return {
@@ -154,7 +260,7 @@ function parseGeminiPlateResult(rawText) {
   }
 }
 
-// Gọi API Gemini 3.8 Flash Vision để đọc biển số xe từ ảnh base64
+// Gọi API Gemini Vision để đọc biển số xe từ ảnh base64
 async function callGeminiLicensePlate(apiKey, base64Data, mimeType = 'image/jpeg') {
   const prompt = `Bạn là hệ thống nhận diện biển số xe cơ giới thông minh tại công trường Việt Nam.
 Nhiệm vụ: Đọc chính xác biển số xe cơ giới (xe tải ben, xe bồn, đầu kéo mooc, container, xe chở vật liệu) trong bức ảnh được cung cấp.
@@ -163,56 +269,14 @@ Quy chuẩn biển số xe cơ giới tại Việt Nam:
 - Biển 1 dòng (dài): VD 29C-881.23, 15C-345.67, 30H-9999, 29R-012.34
 - Biển 2 dòng (vuông): Dòng trên "29C", dòng dưới "881.23" -> Ghép lại thành "29C-881.23".
 Yêu cầu kết quả trả về:
-1. Chuẩn hóa biển số thành chữ in hoa, có gạch nối phân cách: ví dụ "29C-881.23", "51D-123.45".
+1. Chuẩn hóa biển số thành chữ in hoa, có gạch nối phân cách: ví dụ "29C-881.23", "51H-919.91", "51D-123.45".
 2. Trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm giải thích, không markdown code fence):
 {"plate": "29C-881.23", "confidence": 0.98, "vehicle_type": "Xe tải ben", "notes": "Biển số rõ nét"}
 Nếu ảnh mờ hoặc không có biển số xe, trả về:
 {"plate": null, "confidence": 0, "vehicle_type": null, "notes": "Không phát hiện biển số xe"}`;
 
-  // 1. Thử Interactions API (Model gemini-3.8-flash)
-  try {
-    const interRes = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json',
-        'Api-Revision': '2026-05-20'
-      },
-      body: JSON.stringify({
-        model: 'gemini-3.8-flash',
-        input: [
-          { type: 'text', text: prompt },
-          { type: 'image', data: base64Data, mime_type: mimeType }
-        ]
-      }),
-      signal: AbortSignal.timeout(12000)
-    });
-
-    if (interRes.ok) {
-      const data = await interRes.json();
-      let text = '';
-      if (data.output_text) {
-        text = data.output_text;
-      } else if (Array.isArray(data.steps)) {
-        for (const step of data.steps) {
-          if (step.type === 'model_output' && Array.isArray(step.content)) {
-            for (const c of step.content) {
-              if (c.type === 'text') text += c.text;
-            }
-          }
-        }
-      }
-      if (text) {
-        const parsed = parseGeminiPlateResult(text);
-        if (parsed) return parsed;
-      }
-    }
-  } catch (e) {
-    console.warn('[Gemini Interactions]:', e.message);
-  }
-
-  // 2. Fallback GenerateContent API (gemini-3.8-flash, gemini-2.5-flash, gemini-1.5-flash hoặc gemini-flash-latest)
-  const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
+  // GenerateContent API (gemini-2.5-flash, gemini-2.0-flash, gemini-1.5-flash)
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
   for (const m of models) {
     try {
       const genRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
@@ -236,7 +300,7 @@ Nếu ảnh mờ hoặc không có biển số xe, trả về:
         const textPart = cand?.content?.parts?.[0]?.text;
         if (textPart) {
           const parsed = parseGeminiPlateResult(textPart);
-          if (parsed) return parsed;
+          if (parsed && parsed.plate) return parsed;
         }
       }
     } catch (e) {

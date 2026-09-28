@@ -3678,18 +3678,33 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[T]/g, '7')
     .replace(/[B]/g, '8');
 
-  // PASS 1: Khớp biển vuông 2 dòng nguyên bản (dòng 1: "51H", dòng 2: "919.91" hoặc "91991")
+  // PASS 1: Khớp biển vuông 2 dòng nguyên bản (dòng 1: "51H", dòng 2: "919.91", "1919.91", "91991" hoặc "191991")
   if (rawLines.length >= 2) {
     for (let i = 0; i < rawLines.length - 1; i++) {
       const line1 = rawLines[i];
       const line2 = rawLines[i + 1];
       const m1 = line1.match(/^([1-9][0-9])([A-Z]{1,2}|[A-Z][0-9])[-.]?$/);
-      const m2 = line2.match(/^([0-9]{3})[-.]?([0-9]{2})$|^([0-9]{4})$/);
-      if (m1 && m2) {
+      if (m1) {
         const prov = m1[1];
         const ser = m1[2];
-        const num = m2[1] ? (m2[1] + '.' + m2[2]) : m2[3];
-        return `${prov}${ser}-${num}`;
+
+        // Trường hợp 1: Dòng 2 có định dạng chuẩn 5 số có chấm: "919.91" hoặc bị dính rác viền trái: "1919.91", "|919.91"
+        const mDot = line2.match(/([0-9]{3})\.([0-9]{2})$/);
+        if (mDot) {
+          return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
+        }
+
+        // Trường hợp 2: Dòng 2 là dãy số liền (nếu dính viền 6 số như 191991, lấy đúng 5 số cuối)
+        const digitsOnly = line2.replace(/[^0-9]/g, '');
+        if (digitsOnly.length >= 5) {
+          const last5 = digitsOnly.slice(-5);
+          return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
+        }
+
+        // Trường hợp 3: Biển 4 số cũ
+        if (digitsOnly.length === 4) {
+          return `${prov}${ser}-${digitsOnly}`;
+        }
       }
     }
   }
@@ -3702,31 +3717,38 @@ function cleanAndNormalizePlateText(text) {
   let m = flat.match(r5Dot);
   if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
 
-  // 2.2: Biển 5 số liền không chấm: 51H91991, 29C 88123
-  const r5Plain = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})([0-9]{2})\b/;
+  // 2.2: Biển 5 số liền không chấm: 51H91991, 29C 88123 (chính xác 5 số)
+  const r5Plain = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})([0-9]{2})(?![0-9])\b/;
   m = flat.match(r5Plain);
   if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
 
-  // 2.3: Biển 4 số: 30H-9999, 29C 8888
-  const r4 = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{4})\b/;
+  // 2.3: Biển 4 số: 30H-9999, 29C 8888 (chính xác 4 số, không bị nuốt bởi biển 5 số có chấm)
+  const r4 = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{4})(?![0-9.])\b/;
   m = flat.match(r4);
   if (m) return `${m[1]}${m[2]}-${m[3]}`;
 
-  // PASS 3: Fallback sửa lỗi OCR nhầm ký tự tương đồng (chỉ sửa khi sê-ri hợp lệ có chữ cái)
-  // Biển 2 dòng có sai lệch ký tự
+  // PASS 3: Fallback sửa lỗi OCR nhầm ký tự tương đồng
   if (rawLines.length >= 2) {
     for (let i = 0; i < rawLines.length - 1; i++) {
       let l1 = rawLines[i];
       let l2 = rawLines[i + 1];
       let m1 = l1.match(/^([0-9A-Z]{2})([A-Z0-9]{1,2})[-.]?$/);
-      let m2 = l2.match(/^([0-9A-Z]{3})[-.]?([0-9A-Z]{2})$|^([0-9A-Z]{4})$/);
-      if (m1 && m2) {
+      if (m1) {
         const prov = fixDigits(m1[1]);
         let ser = m1[2];
-        if (/^[0-9]+$/.test(ser)) continue; // Sê-ri không được là số thuần túy (loại bỏ phím bàn phím)
-        const num = m2[1] ? (fixDigits(m2[1]) + '.' + fixDigits(m2[2])) : fixDigits(m2[3]);
-        if (/^[1-9][0-9]$/.test(prov)) {
-          return `${prov}${ser}-${num}`;
+        if (/^[0-9]+$/.test(ser)) continue; // Sê-ri không được là số thuần túy
+
+        const l2Digits = fixDigits(l2).replace(/[^0-9]/g, '');
+        const mDot2 = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})$/);
+        if (mDot2 && /^[1-9][0-9]$/.test(prov)) {
+          return `${prov}${ser}-${fixDigits(mDot2[1])}.${fixDigits(mDot2[2])}`;
+        }
+        if (l2Digits.length >= 5 && /^[1-9][0-9]$/.test(prov)) {
+          const last5 = l2Digits.slice(-5);
+          return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
+        }
+        if (l2Digits.length === 4 && /^[1-9][0-9]$/.test(prov)) {
+          return `${prov}${ser}-${l2Digits}`;
         }
       }
     }
@@ -3747,7 +3769,7 @@ function cleanAndNormalizePlateText(text) {
   return null;
 }
 
-// Tiền xử lý hình ảnh cho OCR cục bộ: Tối ưu kích thước & Nhị phân hóa Otsu Binarization
+// Tiền xử lý hình ảnh cho OCR cục bộ: Tối ưu kích thước & Nhị phân hóa Otsu Binarization + Border Margin Clearing
 function preprocessImageForOcr(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -3830,6 +3852,21 @@ function preprocessImageForOcr(dataUrl) {
           d[i + 2] = val;
         }
 
+        // Xóa sạch 4% mép viền ngoài cùng thành màu trắng (255)
+        // Loại bỏ triệt để viền khung kim loại đen, bóng đổ, đinh ốc tránh sinh ký tự 1 hoặc | ảo ở rìa
+        const marginX = Math.round(w * 0.04);
+        const marginY = Math.round(h * 0.04);
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (x < marginX || x >= w - marginX || y < marginY || y >= h - marginY) {
+              const idx = (y * w + x) * 4;
+              d[idx] = 255;
+              d[idx + 1] = 255;
+              d[idx + 2] = 255;
+            }
+          }
+        }
+
         ctx.putImageData(imgData, 0, 0);
       } catch (e) {
         console.warn('Lỗi bộ lọc Otsu:', e);
@@ -3882,6 +3919,54 @@ function preprocessGrayscaleOnly(dataUrl) {
   });
 }
 
+// Quản lý Tesseract worker singleton để tối ưu tốc độ và áp dụng whitelist, PSM 6 chuẩn xác
+let _ocrWorker = null;
+let _ocrWorkerPromise = null;
+async function getOcrWorker() {
+  if (_ocrWorker) return _ocrWorker;
+  if (_ocrWorkerPromise) return _ocrWorkerPromise;
+  _ocrWorkerPromise = (async () => {
+    try {
+      const worker = await Tesseract.createWorker('eng', 1, {
+        logger: m => {
+          if (m.status === 'recognizing text') {
+            const pct = 60 + Math.round((m.progress || 0) * 35);
+            updateScannerProgress('⚡ Đang đọc ký tự OCR...', `${pct}%`, pct);
+          }
+        }
+      });
+      await worker.setParameters({
+        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-',
+        tessedit_pageseg_mode: '6'
+      });
+      _ocrWorker = worker;
+      return worker;
+    } catch (e) {
+      console.warn('Không thể khởi tạo Tesseract worker tùy biến:', e);
+      _ocrWorkerPromise = null;
+      return null;
+    }
+  })();
+  return _ocrWorkerPromise;
+}
+
+// Thực hiện OCR nhận diện qua Worker hoặc Tesseract trực tiếp
+async function doOcrRecognize(canvas) {
+  try {
+    if (typeof Tesseract.createWorker === 'function') {
+      const worker = await getOcrWorker();
+      if (worker) {
+        return await worker.recognize(canvas);
+      }
+    }
+  } catch (err) {
+    console.warn('Worker recognize gặp lỗi, thử Tesseract.recognize:', err);
+    _ocrWorker = null;
+    _ocrWorkerPromise = null;
+  }
+  return await Tesseract.recognize(canvas, 'eng');
+}
+
 // Nhận diện bằng thư viện OCR thiết bị (Offline Tesseract)
 async function recognizeWithClientOcr(dataUrl) {
   if (typeof Tesseract === 'undefined') {
@@ -3900,26 +3985,18 @@ async function recognizeWithClientOcr(dataUrl) {
     });
   }
 
-  updateScannerProgress('⚡ Tiền xử lý hình ảnh...', 'Lọc tương phản Otsu & khử mờ...', 40);
+  updateScannerProgress('⚡ Tiền xử lý hình ảnh...', 'Lọc tương phản Otsu & khử viền khung...', 40);
   const preprocessedCanvas = await preprocessImageForOcr(dataUrl);
 
   updateScannerProgress('⚡ Đang quét OCR thiết bị...', 'Đọc các ký tự biển số...', 60);
 
   let rawText = '';
-  let conf = 0.75;
+  let conf = 0.85;
 
   try {
-    const res = await Tesseract.recognize(preprocessedCanvas, 'eng', {
-      tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-',
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          const pct = 60 + Math.round((m.progress || 0) * 35);
-          updateScannerProgress('⚡ Đang đọc ký tự OCR...', `${pct}%`, pct);
-        }
-      }
-    });
+    const res = await doOcrRecognize(preprocessedCanvas);
     rawText = res?.data?.text || '';
-    conf = res?.data?.confidence ? Math.round(res.data.confidence) / 100 : 0.75;
+    conf = res?.data?.confidence ? Math.round(res.data.confidence) / 100 : 0.85;
   } catch (err) {
     console.warn('Lỗi OCR Otsu:', err);
   }
@@ -3931,14 +4008,12 @@ async function recognizeWithClientOcr(dataUrl) {
     updateScannerProgress('⚡ Quét bổ sung...', 'Thử nghiệm phương sai tương phản...', 85);
     try {
       const fallbackCanvas = await preprocessGrayscaleOnly(dataUrl);
-      const res2 = await Tesseract.recognize(fallbackCanvas, 'eng', {
-        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-'
-      });
+      const res2 = await doOcrRecognize(fallbackCanvas);
       const rawText2 = res2?.data?.text || '';
       parsedPlate = cleanAndNormalizePlateText(rawText2);
       if (parsedPlate) {
         rawText = rawText2;
-        conf = res2?.data?.confidence ? Math.round(res2.data.confidence) / 100 : 0.7;
+        conf = res2?.data?.confidence ? Math.round(res2.data.confidence) / 100 : 0.75;
       }
     } catch (e2) {
       console.warn('Lỗi OCR fallback:', e2);
