@@ -183,9 +183,9 @@ function cleanAndNormalizePlateText(text) {
   if (!text || typeof text !== 'string') return null;
 
   const fixDigits = (s) => (s || '')
-    .replace(/[ODQ]/g, '0')
-    .replace(/[IL|]/g, '1')
-    .replace(/[Z]/g, '2')
+    .replace(/[ODQo]/g, '0')
+    .replace(/[IL|l!i]/g, '1')
+    .replace(/[Zz]/g, '2')
     .replace(/[E]/g, '3')
     .replace(/[A]/g, '4')
     .replace(/[S]/g, '5')
@@ -194,15 +194,12 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[B]/g, '8');
 
   // Làm sạch văn bản thô, chuẩn hóa Đ/đ về D để đồng nhất ASCII
-  const clean = text.replace(/[^a-zA-Z0-9.\-\n\sĐđ]/g, ' ').toUpperCase().replace(/Đ/g, 'D');
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\sĐđ:;,|]/g, ' ').toUpperCase().replace(/Đ/g, 'D');
 
-  // Hàm chọn mã tỉnh 2 số hợp lệ từ chuỗi số
   function pickValidProvince(digitsStr) {
     if (!digitsStr || digitsStr.length < 2) return null;
-    // Ưu tiên 2 số cuối cùng ngay trước sê-ri
     const cand = digitsStr.slice(-2);
     if (VALID_PROVINCE_CODES.has(cand)) return cand;
-    // Nếu có > 2 số, kiểm tra các cặp 2 số từ phải sang trái
     for (let k = digitsStr.length - 2; k >= 0; k--) {
       const c = digitsStr.slice(k, k + 2);
       if (VALID_PROVINCE_CODES.has(c)) return c;
@@ -210,38 +207,83 @@ function cleanAndNormalizePlateText(text) {
     return null;
   }
 
-  // Tách dòng
-  const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
+  // Tách dòng và làm sạch từng dòng
+  const rawLines = clean.split('\n')
+    .map(l => l.trim())
+    .filter(Boolean);
 
-  // PASS 1: Quét trên các dòng riêng biệt (Biển vuông 2 dòng)
-  const linePrefixRegex = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![A-Z0-9])`);
+  // =========================================================================
+  // PASS 1: XỬ LÝ CHUYÊN BIỆT CHO BIỂN VUÔNG 2 DÒNG (Bộ Công An: 330 x 165 mm)
+  // Đặc thù: Dòng 1 gồm Mã tỉnh + Sê-ri (VD: 30F, 29KT, 51D, 15RM).
+  //         Dòng 2 gồm 5 chữ số có chấm (VD: 256.58, 113.97) hoặc 4 chữ số.
+  // =========================================================================
+  let foundSeries = null;
+  let foundNumber = null;
+
+  const seriesRegex = /(?:^|[^A-Z0-9])([0-9ODIL]{2,4})\s*([A-Z]{1,2}|[A-Z][0-9])(?![A-Z0-9])/;
+
   for (let i = 0; i < rawLines.length; i++) {
-    const l1 = rawLines[i];
-    const mPref = l1.match(linePrefixRegex);
-    if (mPref) {
-      const prov = pickValidProvince(mPref[1]);
+    const line = rawLines[i].replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/^[0-9]{3,5}$/.test(line.replace(/\s+/g, ''))) continue;
+
+    const m = line.match(seriesRegex);
+    if (m) {
+      const fixedPre = m[1].replace(/[OD]/g, '0').replace(/[IL]/g, '1').replace(/[^0-9]/g, '');
+      const prov = pickValidProvince(fixedPre);
       if (prov) {
-        const ser = mPref[2];
-        for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
-          const l2 = rawLines[j];
-          const mDot = l2.match(/([0-9]{3})\.([0-9]{2})(?![0-9])/);
-          if (mDot) {
-            return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
-          }
-          const digitsOnly = l2.replace(/[^0-9]/g, '');
-          if (digitsOnly.length >= 5) {
-            const last5 = digitsOnly.slice(-5);
-            return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
-          }
-          if (digitsOnly.length === 4) {
-            return `${prov}${ser}-${digitsOnly}`;
-          }
-        }
+        foundSeries = {
+          prov,
+          ser: m[2],
+          lineIndex: i
+        };
+        break;
       }
     }
   }
 
-  // PASS 2: Quét trên toàn bộ văn bản gộp (Biển 1 dòng dài)
+  if (foundSeries) {
+    for (let i = 0; i < rawLines.length; i++) {
+      if (i === foundSeries.lineIndex) continue;
+      const curLine = rawLines[i];
+
+      const mDot = curLine.match(/([0-9OILDZESGBT]{3})\s*[-.,:;]?\s*([0-9OILDZESGBT]{2})(?![0-9A-Z])/);
+      if (mDot) {
+        const n1 = fixDigits(mDot[1]).replace(/[^0-9]/g, '');
+        const n2 = fixDigits(mDot[2]).replace(/[^0-9]/g, '');
+        if (n1.length === 3 && n2.length === 2) {
+          foundNumber = `${n1}.${n2}`;
+          break;
+        }
+      }
+
+      const fixedDigitsOnly = fixDigits(curLine).replace(/[^0-9]/g, '');
+      if (fixedDigitsOnly.length === 5) {
+        foundNumber = `${fixedDigitsOnly.slice(0, 3)}.${fixedDigitsOnly.slice(3)}`;
+        break;
+      }
+
+      if (fixedDigitsOnly.length === 4) {
+        foundNumber = fixedDigitsOnly;
+        break;
+      }
+
+      if (fixedDigitsOnly.length === 3 && i + 1 < rawLines.length && i + 1 !== foundSeries.lineIndex) {
+        const nextDigits = fixDigits(rawLines[i + 1]).replace(/[^0-9]/g, '');
+        if (nextDigits.length === 2) {
+          foundNumber = `${fixedDigitsOnly}.${nextDigits}`;
+          break;
+        }
+      }
+    }
+
+    if (foundSeries && foundNumber) {
+      return `${foundSeries.prov}${foundSeries.ser}-${foundNumber}`;
+    }
+  }
+
+  // =========================================================================
+  // PASS 2: BIỂN DÀI 1 DÒNG HOẶC VĂN BẢN ĐÃ LÀM PHẲNG (FLAT)
+  // =========================================================================
   const flat = clean.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
 
   // 2.1: Biển 5 số có chấm: VD '51H-919.91', '351H-919.91', '29C-881.23'
@@ -268,41 +310,9 @@ function cleanAndNormalizePlateText(text) {
     if (prov) return `${prov}${mf[2]}-${mf[3]}`;
   }
 
-  // PASS 3: Fallback sửa lỗi OCR ký tự tương đồng
-  // 3.1: Dòng vuông với lỗi OCR
-  const linePrefixPass3 = new RegExp(`([0-9A-Z]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![A-Z0-9])`);
-  for (let i = 0; i < rawLines.length; i++) {
-    const l1 = rawLines[i];
-    const mPref = l1.match(linePrefixPass3);
-    if (mPref) {
-      const fixedPre = fixDigits(mPref[1]).replace(/[^0-9]/g, '');
-      const prov = pickValidProvince(fixedPre);
-      if (prov) {
-        const ser = mPref[2];
-        for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
-          const l2 = rawLines[j];
-          const mDot = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})/);
-          if (mDot) {
-            const n1 = fixDigits(mDot[1]);
-            const n2 = fixDigits(mDot[2]);
-            if (/^[0-9]{3}$/.test(n1) && /^[0-9]{2}$/.test(n2)) {
-              return `${prov}${ser}-${n1}.${n2}`;
-            }
-          }
-          const digitsOnly = fixDigits(l2).replace(/[^0-9]/g, '');
-          if (digitsOnly.length >= 5) {
-            const last5 = digitsOnly.slice(-5);
-            return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
-          }
-          if (digitsOnly.length === 4) {
-            return `${prov}${ser}-${digitsOnly}`;
-          }
-        }
-      }
-    }
-  }
-
-  // 3.2: Biển 1 dòng phẳng với lỗi OCR
+  // =========================================================================
+  // PASS 3: FALLBACK SỬA LỖI OCR KÝ TỰ TƯƠNG ĐỒNG TRÊN TOÀN VĂN BẢN
+  // =========================================================================
   const rPass3 = new RegExp(`([0-9A-Z]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9A-Z]{3})\\s*[-.]?\\s*([0-9A-Z]{2})(?![0-9A-Z])`);
   mf = flat.match(rPass3);
   if (mf) {
@@ -313,6 +323,16 @@ function cleanAndNormalizePlateText(text) {
       if (/^[0-9]{3}\.[0-9]{2}$/.test(numPart)) {
         return `${prov}${mf[2]}-${numPart}`;
       }
+    }
+  }
+
+  // PASS 4: Biển vuông nhưng dòng số nằm trước dòng sê-ri trong văn bản phẳng
+  const rInverse = new RegExp(`([0-9]{3})\\s*[-.]\\s*([0-9]{2})\\s+([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![0-9A-Z])`);
+  mf = flat.match(rInverse);
+  if (mf) {
+    const prov = pickValidProvince(mf[3]);
+    if (prov) {
+      return `${prov}${mf[4]}-${mf[1]}.${mf[2]}`;
     }
   }
 
@@ -376,19 +396,24 @@ Quy chuẩn biển số ô tô Việt Nam theo quy định Bộ Công An:
    - Sê-ri đăng ký tiêu chuẩn: 20 chữ cái in hoa: A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z (hoặc C1, A1, D1 cho xe tải/bán tải).
    - 10 KÝ HIỆU RIÊNG XE CƠ GIỚI:
      * KT: Xe doanh nghiệp Quân đội (VD: 29KT-113.97)
-     * TĐ: Xe thí điểm sản xuất, lắp ráp trong nước
-     * MĐ: Xe máy điện
+     * TĐ hoặc TD: Xe thí điểm sản xuất, lắp ráp trong nước
+     * MĐ hoặc MD: Xe máy điện
      * LD: Xe doanh nghiệp có vốn đầu tư nước ngoài (VD: 29LD-012.34)
      * DA: Xe ban quản lý dự án do nước ngoài đầu tư
      * RM: Xe rơ moóc, sơ mi rơ moóc (VD: 15RM-012.34)
-     * MK: Máy kéo
+     * MK: Máy kéo nông lâm công trình
      * T: Xe đăng ký tạm thời
      * HC: Xe ô tô phạm vi hoạt động hạn chế
      * CD: Xe chuyên dùng của Công an nhân dân
    - Dãy số thứ tự: 5 chữ số có chấm phân cách 'xxx.xx' (VD: 256.58, 113.97, 919.91) hoặc 4 số cũ 'xxxx' (VD: 9999).
-2. Quy cách hiển thị trên biển số theo bản vẽ kỹ thuật BCA:
-   - Biển 1 dòng dài (520x110mm): [Mã tỉnh + Sê-ri] [Dấu chấm] [Dãy số] -> Ghép lại thành "30F-256.58", "29KT-113.97", "51H-919.91".
-   - Biển 2 dòng vuông (330x165mm): Dòng trên "30F" hoặc "29KT", dòng dưới "256.58" hoặc "113.97" -> Ghép lại thành "30F-256.58", "29KT-113.97".
+2. QUY CÁCH VÀ CẤU TRÚC 2 DÒNG BIỂN SỐ THEO BỘ CÔNG AN:
+   - ĐẶC BIỆT CHÚ Ý BIỂN VUÔNG (2 DÒNG, kích thước 330x165mm):
+     Hầu hết xe tải ben, xe bồn, container, rơ moóc chở vật liệu xây dựng đều mang biển vuông 2 dòng.
+     * Dòng trên (hàng 1): Mã tỉnh (2 số) + Sê-ri (VD: "30F", "29KT", "51D", "60C", "15RM", "29LD", "29TD"...).
+     * Dòng dưới (hàng 2): Dãy 5 chữ số có chấm (VD: "256.58", "113.97", "919.91"...) hoặc 4 số ("8888").
+     * BẮT BUỘC ghép dòng trên và dòng dưới thành chuỗi duy nhất: [Dòng trên]-[Dòng dưới] (VD: "30F-256.58", "29KT-113.97", "51D-919.91", "15RM-012.34").
+     * Tuyệt đối không bỏ sót dòng trên hoặc dòng dưới! Bỏ qua các ốc vít, bu lông, đèn soi biển số.
+   - Biển 1 dòng dài (520x110mm): Toàn bộ nằm trên 1 hàng ngang -> Ghép lại thành "30F-256.58", "29KT-113.97", "51H-919.91".
 Trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm markdown):
 {"plate": "29KT-113.97", "confidence": 0.98, "vehicle_type": "Xe doanh nghiệp Quân đội", "notes": "Biển số rõ nét"}
 Nếu không phát hiện được biển số xe, trả về:
@@ -2425,7 +2450,29 @@ const server = http.createServer(async (req, res) => {
       }
 
       try {
-        const result = await callGeminiLicensePlate(apiKey, base64Data, mimeType);
+        let result = await callGeminiLicensePlate(apiKey, base64Data, mimeType);
+        
+        // Nếu ảnh crop chưa đọc được, tự động fallback thử lại với ảnh toàn cảnh (full_image)
+        if ((!result || !result.plate) && body.full_image && body.full_image !== image) {
+          let fullBase64 = body.full_image;
+          let fullMime = 'image/jpeg';
+          if (body.full_image.startsWith('data:')) {
+            const mFull = body.full_image.match(/^data:([^;]+);base64,(.+)$/s);
+            if (mFull) {
+              fullMime = mFull[1];
+              fullBase64 = mFull[2];
+            }
+          }
+          try {
+            const fullResult = await callGeminiLicensePlate(apiKey, fullBase64, fullMime);
+            if (fullResult && fullResult.plate) {
+              result = fullResult;
+            }
+          } catch (fErr) {
+            console.warn('[Gemini full_image fallback]:', fErr.message);
+          }
+        }
+
         if (result && result.plate) {
           return sendJson(res, 200, {
             success: true,

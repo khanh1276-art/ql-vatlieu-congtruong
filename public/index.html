@@ -147,7 +147,7 @@
           <div>
             <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-white leading-tight flex items-center gap-2">
               <span>FECON QUẢN LÝ VẬT TƯ</span>
-              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.6</span>
+              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.7</span>
             </h1>
             <p class="text-[11px] sm:text-xs text-slate-400 font-medium">Kiểm Soát Nhập Xuất • Đa Dự Án • Khóa Sổ Ngày</p>
           </div>
@@ -2061,24 +2061,60 @@
           </div>
         </div>
 
+        <!-- Bộ chọn Loại Khung Ngắm Biển Số (Tối ưu riêng Biển Vuông 2 dòng và Biển Dài 1 dòng) -->
+        <div class="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
+          <button type="button" id="btnPlateModeSquare" onclick="setPlateScannerMode('square')" 
+            class="flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold text-xs transition flex items-center justify-center gap-1.5 shadow-sm">
+            <span class="text-sm">⬛</span>
+            <span>Biển Vuông (Xe Tải / Ben / Moóc)</span>
+          </button>
+          <button type="button" id="btnPlateModeLong" onclick="setPlateScannerMode('long')" 
+            class="flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center justify-center gap-1.5">
+            <span class="text-sm">▬</span>
+            <span>Biển Dài (Xe Con / Bán Tải)</span>
+          </button>
+        </div>
+
         <!-- Live Camera Viewfinder & File Fallback -->
         <div class="relative bg-slate-900 rounded-2xl overflow-hidden shadow-inner border border-slate-700 flex flex-col items-center justify-center min-h-[260px]">
           <!-- Video element -->
           <video id="scannerVideo" autoplay playsinline muted class="w-full h-64 sm:h-72 object-cover"></video>
           
-          <!-- Viewfinder Frame Overlay (Tỷ lệ biển số chuẩn 2.4:1, căn giữa tối ưu) -->
-          <div id="scannerTargetBox" class="absolute inset-x-6 top-1/2 -translate-y-1/2 max-w-sm mx-auto h-32 sm:h-36 border-2 border-amber-400/90 rounded-xl pointer-events-none flex flex-col items-center justify-between p-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] transition-all">
+          <!-- Viewfinder Frame Overlay (Tự động thích ứng Biển Vuông hoặc Biển Dài) -->
+          <div id="scannerTargetBox" class="absolute inset-x-4 top-1/2 -translate-y-1/2 max-w-[310px] mx-auto h-[175px] border-2 border-amber-400/95 rounded-xl pointer-events-none flex flex-col items-center justify-between p-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] transition-all duration-300">
             <!-- 4 góc định vị nhận diện sắc nét -->
             <div class="w-full flex justify-between items-center pointer-events-none">
               <span class="border-t-2 border-l-2 border-amber-400 w-4 h-4 rounded-tl"></span>
-              <div class="text-[11px] font-bold text-amber-300 bg-slate-900/90 px-2.5 py-0.5 rounded-full border border-amber-400/40 shadow-sm">
-                CĂN KHUNG VÀO BIỂN SỐ
+              <div class="text-[10px] font-bold text-amber-300 bg-slate-900/90 px-2 py-0.5 rounded-full border border-amber-400/40 shadow-sm flex items-center gap-1">
+                <span>🎯</span>
+                <span>CĂN VỪA BIỂN SỐ VÀO KHUNG</span>
               </div>
               <span class="border-t-2 border-r-2 border-amber-400 w-4 h-4 rounded-tr"></span>
             </div>
+
+            <!-- Vạch chỉ dẫn biển vuông 2 dòng (Bộ Công An) -->
+            <div id="scannerSquareGuide" class="w-full flex flex-col items-center justify-center pointer-events-none space-y-1 py-1">
+              <div class="w-full flex items-center justify-center gap-1 text-[10px] text-amber-200/95 font-mono bg-slate-900/60 rounded px-1">
+                <span>Dòng 1:</span>
+                <span class="font-bold text-white">Mã tỉnh & Sê-ri</span>
+                <span class="text-amber-300 text-[9px]">(VD: 30F, 29KT, 51D)</span>
+              </div>
+              <div class="w-full border-t border-dashed border-amber-400/50 my-0.5"></div>
+              <div class="w-full flex items-center justify-center gap-1 text-[10px] text-amber-200/95 font-mono bg-slate-900/60 rounded px-1">
+                <span>Dòng 2:</span>
+                <span class="font-bold text-white">Dãy 5 số</span>
+                <span class="text-amber-300 text-[9px]">(VD: 256.58, 113.97)</span>
+              </div>
+            </div>
+
+            <!-- Vạch chỉ dẫn biển dài 1 dòng -->
+            <div id="scannerLongGuide" class="hidden w-full flex items-center justify-center pointer-events-none">
+              <span class="text-[11px] font-mono font-bold text-amber-200 bg-slate-900/70 px-2 py-0.5 rounded">xxA-xxx.xx hoặc xxA-xxxx</span>
+            </div>
+
             <div class="w-full flex justify-between items-center text-[10px] text-slate-300 px-1 font-mono pointer-events-none">
               <span class="border-b-2 border-l-2 border-amber-400 w-4 h-4 rounded-bl"></span>
-              <span class="text-amber-200/90 font-medium">xxA-xxx.xx hoặc xxA-xxxx</span>
+              <span class="text-[9px] text-amber-300/90 font-medium">Quy chuẩn Bộ Công An</span>
               <span class="border-b-2 border-r-2 border-amber-400 w-4 h-4 rounded-br"></span>
             </div>
           </div>

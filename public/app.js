@@ -3652,6 +3652,7 @@ window.executeImportBatch = executeImportBatch;
 const ScannerState = {
   stream: null,
   facingMode: 'environment', // 'environment' (sau) hoặc 'user' (trước)
+  plateMode: localStorage.getItem('fecon_plate_mode') || 'square', // 'square' (biển vuông 330x165) hoặc 'long' (biển dài 520x110)
   capturedDataUrl: null,
   recognizedPlate: null,
   recognitionMethod: null, // 'gemini' hoặc 'tesseract'
@@ -3720,9 +3721,9 @@ function cleanAndNormalizePlateText(text) {
   if (!text || typeof text !== 'string') return null;
 
   const fixDigits = (s) => (s || '')
-    .replace(/[ODQ]/g, '0')
-    .replace(/[IL|]/g, '1')
-    .replace(/[Z]/g, '2')
+    .replace(/[ODQo]/g, '0')
+    .replace(/[IL|l!i]/g, '1')
+    .replace(/[Zz]/g, '2')
     .replace(/[E]/g, '3')
     .replace(/[A]/g, '4')
     .replace(/[S]/g, '5')
@@ -3731,15 +3732,12 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[B]/g, '8');
 
   // Làm sạch văn bản thô, chuẩn hóa Đ/đ về D để đồng nhất ASCII
-  const clean = text.replace(/[^a-zA-Z0-9.\-\n\sĐđ]/g, ' ').toUpperCase().replace(/Đ/g, 'D');
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\sĐđ:;,|]/g, ' ').toUpperCase().replace(/Đ/g, 'D');
 
-  // Hàm chọn mã tỉnh 2 số hợp lệ từ chuỗi số
   function pickValidProvince(digitsStr) {
     if (!digitsStr || digitsStr.length < 2) return null;
-    // Ưu tiên 2 số cuối cùng ngay trước sê-ri
     const cand = digitsStr.slice(-2);
     if (VALID_PROVINCE_CODES.has(cand)) return cand;
-    // Nếu có > 2 số, kiểm tra các cặp 2 số từ phải sang trái
     for (let k = digitsStr.length - 2; k >= 0; k--) {
       const c = digitsStr.slice(k, k + 2);
       if (VALID_PROVINCE_CODES.has(c)) return c;
@@ -3747,38 +3745,83 @@ function cleanAndNormalizePlateText(text) {
     return null;
   }
 
-  // Tách dòng
-  const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
+  // Tách dòng và làm sạch từng dòng
+  const rawLines = clean.split('\n')
+    .map(l => l.trim())
+    .filter(Boolean);
 
-  // PASS 1: Quét trên các dòng riêng biệt (Biển vuông 2 dòng)
-  const linePrefixRegex = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![A-Z0-9])`);
+  // =========================================================================
+  // PASS 1: XỬ LÝ CHUYÊN BIỆT CHO BIỂN VUÔNG 2 DÒNG (Bộ Công An: 330 x 165 mm)
+  // Đặc thù: Dòng 1 gồm Mã tỉnh + Sê-ri (VD: 30F, 29KT, 51D, 15RM).
+  //         Dòng 2 gồm 5 chữ số có chấm (VD: 256.58, 113.97) hoặc 4 chữ số.
+  // =========================================================================
+  let foundSeries = null;
+  let foundNumber = null;
+
+  const seriesRegex = /(?:^|[^A-Z0-9])([0-9ODIL]{2,4})\s*([A-Z]{1,2}|[A-Z][0-9])(?![A-Z0-9])/;
+
   for (let i = 0; i < rawLines.length; i++) {
-    const l1 = rawLines[i];
-    const mPref = l1.match(linePrefixRegex);
-    if (mPref) {
-      const prov = pickValidProvince(mPref[1]);
+    const line = rawLines[i].replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/^[0-9]{3,5}$/.test(line.replace(/\s+/g, ''))) continue;
+
+    const m = line.match(seriesRegex);
+    if (m) {
+      const fixedPre = m[1].replace(/[OD]/g, '0').replace(/[IL]/g, '1').replace(/[^0-9]/g, '');
+      const prov = pickValidProvince(fixedPre);
       if (prov) {
-        const ser = mPref[2];
-        for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
-          const l2 = rawLines[j];
-          const mDot = l2.match(/([0-9]{3})\.([0-9]{2})(?![0-9])/);
-          if (mDot) {
-            return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
-          }
-          const digitsOnly = l2.replace(/[^0-9]/g, '');
-          if (digitsOnly.length >= 5) {
-            const last5 = digitsOnly.slice(-5);
-            return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
-          }
-          if (digitsOnly.length === 4) {
-            return `${prov}${ser}-${digitsOnly}`;
-          }
-        }
+        foundSeries = {
+          prov,
+          ser: m[2],
+          lineIndex: i
+        };
+        break;
       }
     }
   }
 
-  // PASS 2: Quét trên toàn bộ văn bản gộp (Biển 1 dòng dài)
+  if (foundSeries) {
+    for (let i = 0; i < rawLines.length; i++) {
+      if (i === foundSeries.lineIndex) continue;
+      const curLine = rawLines[i];
+
+      const mDot = curLine.match(/([0-9OILDZESGBT]{3})\s*[-.,:;]?\s*([0-9OILDZESGBT]{2})(?![0-9A-Z])/);
+      if (mDot) {
+        const n1 = fixDigits(mDot[1]).replace(/[^0-9]/g, '');
+        const n2 = fixDigits(mDot[2]).replace(/[^0-9]/g, '');
+        if (n1.length === 3 && n2.length === 2) {
+          foundNumber = `${n1}.${n2}`;
+          break;
+        }
+      }
+
+      const fixedDigitsOnly = fixDigits(curLine).replace(/[^0-9]/g, '');
+      if (fixedDigitsOnly.length === 5) {
+        foundNumber = `${fixedDigitsOnly.slice(0, 3)}.${fixedDigitsOnly.slice(3)}`;
+        break;
+      }
+
+      if (fixedDigitsOnly.length === 4) {
+        foundNumber = fixedDigitsOnly;
+        break;
+      }
+
+      if (fixedDigitsOnly.length === 3 && i + 1 < rawLines.length && i + 1 !== foundSeries.lineIndex) {
+        const nextDigits = fixDigits(rawLines[i + 1]).replace(/[^0-9]/g, '');
+        if (nextDigits.length === 2) {
+          foundNumber = `${fixedDigitsOnly}.${nextDigits}`;
+          break;
+        }
+      }
+    }
+
+    if (foundSeries && foundNumber) {
+      return `${foundSeries.prov}${foundSeries.ser}-${foundNumber}`;
+    }
+  }
+
+  // =========================================================================
+  // PASS 2: BIỂN DÀI 1 DÒNG HOẶC VĂN BẢN ĐÃ LÀM PHẲNG (FLAT)
+  // =========================================================================
   const flat = clean.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
 
   // 2.1: Biển 5 số có chấm: VD '51H-919.91', '351H-919.91', '29C-881.23'
@@ -3797,7 +3840,7 @@ function cleanAndNormalizePlateText(text) {
     if (prov) return `${prov}${mf[2]}-${mf[3]}.${mf[4]}`;
   }
 
-  // 2.3: Biển 4 số: VD '30H-9999', '29C 8888'
+  // 2.3: Biển 4 số: VD '30H-9999', '29C 8888', '29T-1234'
   const rFlat4 = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9]{4})(?![0-9.])`);
   mf = flat.match(rFlat4);
   if (mf) {
@@ -3805,41 +3848,9 @@ function cleanAndNormalizePlateText(text) {
     if (prov) return `${prov}${mf[2]}-${mf[3]}`;
   }
 
-  // PASS 3: Fallback sửa lỗi OCR ký tự tương đồng
-  // 3.1: Dòng vuông với lỗi OCR
-  const linePrefixPass3 = new RegExp(`([0-9A-Z]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![A-Z0-9])`);
-  for (let i = 0; i < rawLines.length; i++) {
-    const l1 = rawLines[i];
-    const mPref = l1.match(linePrefixPass3);
-    if (mPref) {
-      const fixedPre = fixDigits(mPref[1]).replace(/[^0-9]/g, '');
-      const prov = pickValidProvince(fixedPre);
-      if (prov) {
-        const ser = mPref[2];
-        for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
-          const l2 = rawLines[j];
-          const mDot = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})/);
-          if (mDot) {
-            const n1 = fixDigits(mDot[1]);
-            const n2 = fixDigits(mDot[2]);
-            if (/^[0-9]{3}$/.test(n1) && /^[0-9]{2}$/.test(n2)) {
-              return `${prov}${ser}-${n1}.${n2}`;
-            }
-          }
-          const digitsOnly = fixDigits(l2).replace(/[^0-9]/g, '');
-          if (digitsOnly.length >= 5) {
-            const last5 = digitsOnly.slice(-5);
-            return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
-          }
-          if (digitsOnly.length === 4) {
-            return `${prov}${ser}-${digitsOnly}`;
-          }
-        }
-      }
-    }
-  }
-
-  // 3.2: Biển 1 dòng phẳng với lỗi OCR
+  // =========================================================================
+  // PASS 3: FALLBACK SỬA LỖI OCR KÝ TỰ TƯƠNG ĐỒNG TRÊN TOÀN VĂN BẢN
+  // =========================================================================
   const rPass3 = new RegExp(`([0-9A-Z]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9A-Z]{3})\\s*[-.]?\\s*([0-9A-Z]{2})(?![0-9A-Z])`);
   mf = flat.match(rPass3);
   if (mf) {
@@ -3850,6 +3861,16 @@ function cleanAndNormalizePlateText(text) {
       if (/^[0-9]{3}\.[0-9]{2}$/.test(numPart)) {
         return `${prov}${mf[2]}-${numPart}`;
       }
+    }
+  }
+
+  // PASS 4: Biển vuông nhưng dòng số nằm trước dòng sê-ri trong văn bản phẳng
+  const rInverse = new RegExp(`([0-9]{3})\\s*[-.]\\s*([0-9]{2})\\s+([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![0-9A-Z])`);
+  mf = flat.match(rInverse);
+  if (mf) {
+    const prov = pickValidProvince(mf[3]);
+    if (prov) {
+      return `${prov}${mf[4]}-${mf[1]}.${mf[2]}`;
     }
   }
 
@@ -4157,6 +4178,51 @@ async function recognizeWithClientOcr(dataUrl) {
     console.warn('Lỗi OCR Pass 2 (Otsu):', err2);
   }
 
+  // PASS 2.5: Phân rã 2 dòng chuyên biệt cho biển vuông (Top Half & Bottom Half Split)
+  // Giải quyết dứt điểm trường hợp biển vuông 330x165mm bị rối loạn dòng hoặc mất số
+  if (!bestPlate && grayscaleCanvas) {
+    updateScannerProgress('⚡ Quét phân tách 2 dòng biển vuông...', 'Đọc dòng trên & dòng dưới...', 80);
+    try {
+      const gw = grayscaleCanvas.width;
+      const gh = grayscaleCanvas.height;
+
+      // Nửa trên (0 -> 56%): Chứa dòng 1: Mã tỉnh + Sê-ri (VD 30F, 29KT, 51D)
+      const topCanvas = document.createElement('canvas');
+      const topH = Math.round(gh * 0.56);
+      topCanvas.width = gw;
+      topCanvas.height = topH;
+      const tctx = topCanvas.getContext('2d');
+      tctx.drawImage(grayscaleCanvas, 0, 0, gw, topH, 0, 0, gw, topH);
+
+      // Nửa dưới (44% -> 100%): Chứa dòng 2: Dãy 5 số (VD 256.58, 113.97)
+      const botCanvas = document.createElement('canvas');
+      const botH = gh - Math.round(gh * 0.44);
+      botCanvas.width = gw;
+      botCanvas.height = botH;
+      const bctx = botCanvas.getContext('2d');
+      bctx.drawImage(grayscaleCanvas, 0, Math.round(gh * 0.44), gw, botH, 0, 0, gw, botH);
+
+      const [resTop, resBot] = await Promise.all([
+        doOcrRecognize(topCanvas),
+        doOcrRecognize(botCanvas)
+      ]);
+
+      const textTop = (resTop?.data?.text || '').trim();
+      const textBot = (resBot?.data?.text || '').trim();
+      const splitText = `${textTop}\n${textBot}`;
+      const splitPlate = cleanAndNormalizePlateText(splitText);
+
+      if (splitPlate) {
+        bestPlate = splitPlate;
+        bestConf = 0.88;
+        bestRawText = splitText;
+        return { plate: bestPlate, confidence: bestConf, rawText: bestRawText };
+      }
+    } catch (splitErr) {
+      console.warn('Lỗi OCR Split Top/Bottom:', splitErr);
+    }
+  }
+
   // PASS 3: Cắt xén 85% tâm ảnh (Loại bỏ toàn bộ nhiễu và chữ thừa xung quanh mép)
   if (!bestPlate && grayscaleCanvas) {
     updateScannerProgress('⚡ Tinh chỉnh tâm ảnh...', 'Khử nhiễu ngoại vi...', 90);
@@ -4249,6 +4315,7 @@ async function openPlateScannerModal() {
   modal.classList.remove('hidden');
 
   resetScannerView();
+  setPlateScannerMode(ScannerState.plateMode);
   checkScannerAiStatus();
   await startScannerCamera();
 }
@@ -4370,6 +4437,46 @@ async function switchCameraFacing() {
   await startScannerCamera();
 }
 
+// Chuyển đổi chế độ khung ngắm: Biển Vuông (Xe Tải/Ben/Moóc) hoặc Biển Dài (Xe Con/Bán Tải)
+function setPlateScannerMode(mode) {
+  ScannerState.plateMode = mode === 'long' ? 'long' : 'square';
+  try { localStorage.setItem('fecon_plate_mode', ScannerState.plateMode); } catch (e) {}
+
+  const btnSquare = document.getElementById('btnPlateModeSquare');
+  const btnLong = document.getElementById('btnPlateModeLong');
+  const targetBox = document.getElementById('scannerTargetBox');
+  const squareGuide = document.getElementById('scannerSquareGuide');
+  const longGuide = document.getElementById('scannerLongGuide');
+
+  if (ScannerState.plateMode === 'square') {
+    if (btnSquare) {
+      btnSquare.className = 'flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold transition flex items-center justify-center gap-1 shadow-sm';
+    }
+    if (btnLong) {
+      btnLong.className = 'flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center justify-center gap-1';
+    }
+    if (targetBox) {
+      targetBox.style.maxWidth = '310px';
+      targetBox.style.height = '175px';
+    }
+    if (squareGuide) squareGuide.classList.remove('hidden');
+    if (longGuide) longGuide.classList.add('hidden');
+  } else {
+    if (btnSquare) {
+      btnSquare.className = 'flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center justify-center gap-1';
+    }
+    if (btnLong) {
+      btnLong.className = 'flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold transition flex items-center justify-center gap-1 shadow-sm';
+    }
+    if (targetBox) {
+      targetBox.style.maxWidth = '340px';
+      targetBox.style.height = '115px';
+    }
+    if (squareGuide) squareGuide.classList.add('hidden');
+    if (longGuide) longGuide.classList.remove('hidden');
+  }
+}
+
 // Đặt lại giao diện chụp về ban đầu
 function resetScannerView() {
   ScannerState.isScanning = false;
@@ -4434,9 +4541,9 @@ async function captureAndRecognize() {
       const boxLeft = (boxRect.left - videoRect.left) + offsetX;
       const boxTop = (boxRect.top - videoRect.top) + offsetY;
 
-      // Thêm lề gọn 4% để căn đúng biển số, không bị dính chữ/chi tiết xung quanh
-      const padW = boxRect.width * 0.04;
-      const padH = boxRect.height * 0.04;
+      // Thêm lề an toàn: 8% ngang và 10% dọc để không bị cắt lẹm chóp hoặc chân số (nhất là biển vuông 2 dòng)
+      const padW = boxRect.width * 0.08;
+      const padH = boxRect.height * 0.10;
 
       const cropX = Math.max(0, Math.round((boxLeft - padW) / scale));
       const cropY = Math.max(0, Math.round((boxTop - padH) / scale));
@@ -4814,6 +4921,7 @@ window.captureAndRecognize = captureAndRecognize;
 window.handleScannerFileSelect = handleScannerFileSelect;
 window.applyScannedPlate = applyScannedPlate;
 window.removeScannedPlateImage = removeScannedPlateImage;
+window.setPlateScannerMode = setPlateScannerMode;
 window.loadAiSettings = loadAiSettings;
 window.saveAiSettings = saveAiSettings;
 window.toggleApiKeyVisibility = toggleApiKeyVisibility;
