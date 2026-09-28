@@ -3606,63 +3606,98 @@ const ScannerState = {
   recognizedPlate: null,
   recognitionMethod: null, // 'gemini' hoặc 'tesseract'
   confidence: 0,
-  isScanning: false
+  isScanning: false,
+  isAiConfigured: false
 };
 
-// Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Cục Đăng Kiểm
+// Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Cục Đăng Kiểm (Thông tư 24/2023/TT-BCA)
 function cleanAndNormalizePlateText(text) {
   if (!text) return null;
-  let clean = text.replace(/[^a-zA-Z0-9.\-\s]/g, ' ').toUpperCase();
-  const lines = clean.split('\n').map(l => l.trim()).filter(Boolean);
-  let flat = lines.join(' ');
+  // Bỏ ký tự lạ, giữ lại chữ cái, chữ số, dấu chấm, gạch ngang, khoảng trắng và xuống dòng
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
+  const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
 
-  // Pass 1: Định dạng chuẩn 2 chữ số tỉnh + 1-2 chữ cái sê-ri + 3-5 chữ số
-  const strictRegex = /\b([0-9]{2})\s*[-.]?\s*([A-Z]{1,2})\s*[-.]?\s*([0-9]{3,5})(?:[-.\s]*([0-9]{2}))?\b/;
-  let m = flat.match(strictRegex);
+  const fixDigits = (s) => (s || '')
+    .replace(/[ODQ]/g, '0')
+    .replace(/[IL|]/g, '1')
+    .replace(/[Z]/g, '2')
+    .replace(/[E]/g, '3')
+    .replace(/[A]/g, '4')
+    .replace(/[S]/g, '5')
+    .replace(/[Gb]/g, '6')
+    .replace(/[T]/g, '7')
+    .replace(/[B]/g, '8');
+
+  // PASS 1: Khớp biển vuông 2 dòng nguyên bản (dòng 1: "51H", dòng 2: "919.91" hoặc "91991")
+  if (rawLines.length >= 2) {
+    for (let i = 0; i < rawLines.length - 1; i++) {
+      const line1 = rawLines[i];
+      const line2 = rawLines[i + 1];
+      const m1 = line1.match(/^([1-9][0-9])([A-Z]{1,2}|[A-Z][0-9])[-.]?$/);
+      const m2 = line2.match(/^([0-9]{3})[-.]?([0-9]{2})$|^([0-9]{4})$/);
+      if (m1 && m2) {
+        const prov = m1[1];
+        const ser = m1[2];
+        const num = m2[1] ? (m2[1] + '.' + m2[2]) : m2[3];
+        return `${prov}${ser}-${num}`;
+      }
+    }
+  }
+
+  // PASS 2: Khớp biển 1 dòng nguyên bản
+  const flat = clean.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // 2.1: Biển 5 số có chấm: 51H-919.91, 29C-881.23, 15LD-123.45
+  const r5Dot = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})\b/;
+  let m = flat.match(r5Dot);
+  if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
+
+  // 2.2: Biển 5 số liền không chấm: 51H91991, 29C 88123
+  const r5Plain = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{3})([0-9]{2})\b/;
+  m = flat.match(r5Plain);
+  if (m) return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
+
+  // 2.3: Biển 4 số: 30H-9999, 29C 8888
+  const r4 = /\b([1-9][0-9])\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9]{4})\b/;
+  m = flat.match(r4);
+  if (m) return `${m[1]}${m[2]}-${m[3]}`;
+
+  // PASS 3: Fallback sửa lỗi OCR nhầm ký tự tương đồng (chỉ sửa khi sê-ri hợp lệ có chữ cái)
+  // Biển 2 dòng có sai lệch ký tự
+  if (rawLines.length >= 2) {
+    for (let i = 0; i < rawLines.length - 1; i++) {
+      let l1 = rawLines[i];
+      let l2 = rawLines[i + 1];
+      let m1 = l1.match(/^([0-9A-Z]{2})([A-Z0-9]{1,2})[-.]?$/);
+      let m2 = l2.match(/^([0-9A-Z]{3})[-.]?([0-9A-Z]{2})$|^([0-9A-Z]{4})$/);
+      if (m1 && m2) {
+        const prov = fixDigits(m1[1]);
+        let ser = m1[2];
+        if (/^[0-9]+$/.test(ser)) continue; // Sê-ri không được là số thuần túy (loại bỏ phím bàn phím)
+        const num = m2[1] ? (fixDigits(m2[1]) + '.' + fixDigits(m2[2])) : fixDigits(m2[3]);
+        if (/^[1-9][0-9]$/.test(prov)) {
+          return `${prov}${ser}-${num}`;
+        }
+      }
+    }
+  }
+
+  // 3.2: Biển 1 dòng có sai lệch ký tự
+  const flatPerm = /\b([0-9A-Z]{2})\s*([A-Z]{1,2}|[A-Z][0-9])\s*[-.]?\s*([0-9A-Z]{3})\s*[-.]?\s*([0-9A-Z]{2})\b/;
+  m = flat.match(flatPerm);
   if (m) {
-    const prov = m[1];
+    const prov = fixDigits(m[1]);
     const ser = m[2];
-    let num = m[3] + (m[4] || '');
-    if (num.length === 5) num = num.slice(0, 3) + '.' + num.slice(3);
-    return `${prov}${ser}-${num}`;
-  }
-
-  // Pass 2: Có dấu chấm phân cách số 5 chữ số: ví dụ 29C-881.23 hoặc 29C 881.23
-  const dotRegex = /\b([0-9]{2})\s*[-.]?\s*([A-Z]{1,2})\s*[-.]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})\b/;
-  m = flat.match(dotRegex);
-  if (m) {
-    return `${m[1]}${m[2]}-${m[3]}.${m[4]}`;
-  }
-
-  // Pass 3: Bộ sửa nhầm lẫn ký tự OCR (0/O, 1/I, 8/B, 5/S...)
-  const numFix = (s) => (s || '')
-    .replace(/O|D/g, '0')
-    .replace(/I|L|\|/g, '1')
-    .replace(/Z/g, '2')
-    .replace(/E/g, '3')
-    .replace(/A/g, '4')
-    .replace(/S/g, '5')
-    .replace(/G|b/g, '6')
-    .replace(/T/g, '7')
-    .replace(/B/g, '8');
-
-  const permRegex = /\b([0-9OIZESGBTD]{2})\s*[-.]?\s*([A-Z0-9]{1,2})\s*[-.]?\s*([0-9OIZESGBTD]{3,5})(?:[-.\s]*([0-9OIZESGBTD]{2}))?\b/;
-  m = flat.match(permRegex);
-  if (m) {
-    const prov = numFix(m[1]);
-    let ser = m[2];
-    if (ser === '0') ser = 'C';
-    if (ser === '8') ser = 'B';
-    if (ser === '1') ser = 'T';
-    let num = numFix(m[3] + (m[4] || ''));
-    if (num.length === 5) num = num.slice(0, 3) + '.' + num.slice(3);
-    return `${prov}${ser}-${num}`;
+    const num = fixDigits(m[3]) + '.' + fixDigits(m[4]);
+    if (/^[1-9][0-9]$/.test(prov)) {
+      return `${prov}${ser}-${num}`;
+    }
   }
 
   return null;
 }
 
-// Tiền xử lý hình ảnh cho OCR cục bộ: Tăng tương phản, khử nhiễu
+// Tiền xử lý hình ảnh cho OCR cục bộ: Tối ưu kích thước & Nhị phân hóa Otsu Binarization
 function preprocessImageForOcr(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -3671,16 +3706,100 @@ function preprocessImageForOcr(dataUrl) {
       const ctx = canvas.getContext('2d');
       let w = img.width;
       let h = img.height;
-      const maxDim = 1200;
-      if (w > maxDim || h > maxDim) {
-        if (w > h) {
-          h = Math.round((h * maxDim) / w);
-          w = maxDim;
-        } else {
-          w = Math.round((w * maxDim) / h);
-          h = maxDim;
-        }
+      const targetW = 850;
+      if (w > targetW || w < 400) {
+        h = Math.round((h * targetW) / w);
+        w = targetW;
       }
+      canvas.width = w;
+      canvas.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+
+      try {
+        const imgData = ctx.getImageData(0, 0, w, h);
+        const d = imgData.data;
+
+        // Tính toán Otsu threshold để tách nền và chữ số
+        const histogram = new Array(256).fill(0);
+        const totalPixels = d.length / 4;
+        for (let i = 0; i < d.length; i += 4) {
+          const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+          histogram[lum]++;
+        }
+
+        let sum = 0;
+        for (let i = 0; i < 256; i++) sum += i * histogram[i];
+
+        let sumB = 0;
+        let wB = 0;
+        let varMax = 0;
+        let threshold = 128;
+
+        for (let t = 0; t < 256; t++) {
+          wB += histogram[t];
+          if (wB === 0) continue;
+          const wF = totalPixels - wB;
+          if (wF === 0) break;
+          sumB += t * histogram[t];
+          const mB = sumB / wB;
+          const mF = (sum - sumB) / wF;
+          const varBetween = wB * wF * (mB - mF) * (mB - mF);
+          if (varBetween > varMax) {
+            varMax = varBetween;
+            threshold = t;
+          }
+        }
+
+        // Đếm số pixel viền để phân biệt nền sáng hay nền tối
+        let borderDarkCount = 0;
+        let borderTotal = 0;
+        const checkBorder = (idx) => {
+          const lum = 0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2];
+          if (lum < threshold) borderDarkCount++;
+          borderTotal++;
+        };
+
+        for (let x = 0; x < w; x++) {
+          checkBorder(x * 4);
+          checkBorder(((h - 1) * w + x) * 4);
+        }
+        for (let y = 0; y < h; y++) {
+          checkBorder((y * w) * 4);
+          checkBorder((y * w + (w - 1)) * 4);
+        }
+
+        const invert = (borderDarkCount / borderTotal) > 0.5;
+
+        // Binarization: Biến ảnh thành đen trắng tuyệt đối
+        for (let i = 0; i < d.length; i += 4) {
+          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          let val = lum < threshold ? 0 : 255;
+          if (invert) val = 255 - val;
+          d[i] = val;
+          d[i + 1] = val;
+          d[i + 2] = val;
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+      } catch (e) {
+        console.warn('Lỗi bộ lọc Otsu:', e);
+      }
+      resolve(canvas);
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Tiền xử lý dạng Grayscale tăng cường tương phản (dùng làm fallback)
+function preprocessGrayscaleOnly(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      let w = img.width;
+      let h = img.height;
       canvas.width = w;
       canvas.height = h;
       ctx.drawImage(img, 0, 0, w, h);
@@ -3690,15 +3809,13 @@ function preprocessImageForOcr(dataUrl) {
         const d = imgData.data;
         let totalLum = 0;
         for (let i = 0; i < d.length; i += 4) {
-          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          totalLum += lum;
+          totalLum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
         }
         const avgLum = totalLum / (d.length / 4);
 
         for (let i = 0; i < d.length; i += 4) {
           let lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          // Kéo giãn tương phản
-          lum = ((lum - avgLum) * 1.6) + avgLum;
+          lum = ((lum - avgLum) * 1.8) + avgLum;
           lum = Math.max(0, Math.min(255, lum));
           d[i] = lum;
           d[i + 1] = lum;
@@ -3706,7 +3823,7 @@ function preprocessImageForOcr(dataUrl) {
         }
         ctx.putImageData(imgData, 0, 0);
       } catch (e) {
-        console.warn('Lỗi bộ lọc canvas:', e);
+        console.warn('Lỗi grayscale filter:', e);
       }
       resolve(canvas);
     };
@@ -3733,25 +3850,54 @@ async function recognizeWithClientOcr(dataUrl) {
     });
   }
 
-  updateScannerProgress('⚡ Tiền xử lý hình ảnh...', 'Tăng độ tương phản & khử mờ...', 40);
+  updateScannerProgress('⚡ Tiền xử lý hình ảnh...', 'Lọc tương phản Otsu & khử mờ...', 40);
   const preprocessedCanvas = await preprocessImageForOcr(dataUrl);
 
   updateScannerProgress('⚡ Đang quét OCR thiết bị...', 'Đọc các ký tự biển số...', 60);
 
-  const res = await Tesseract.recognize(preprocessedCanvas, 'eng', {
-    logger: m => {
-      if (m.status === 'recognizing text') {
-        const pct = 60 + Math.round((m.progress || 0) * 35);
-        updateScannerProgress('⚡ Đang đọc ký tự OCR...', `${pct}%`, pct);
-      }
-    }
-  });
+  let rawText = '';
+  let conf = 0.75;
 
-  const rawText = res?.data?.text || '';
-  const parsedPlate = cleanAndNormalizePlateText(rawText);
+  try {
+    const res = await Tesseract.recognize(preprocessedCanvas, 'eng', {
+      tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-',
+      logger: m => {
+        if (m.status === 'recognizing text') {
+          const pct = 60 + Math.round((m.progress || 0) * 35);
+          updateScannerProgress('⚡ Đang đọc ký tự OCR...', `${pct}%`, pct);
+        }
+      }
+    });
+    rawText = res?.data?.text || '';
+    conf = res?.data?.confidence ? Math.round(res.data.confidence) / 100 : 0.75;
+  } catch (err) {
+    console.warn('Lỗi OCR Otsu:', err);
+  }
+
+  let parsedPlate = cleanAndNormalizePlateText(rawText);
+
+  // Nếu binarize chưa đọc được, quét thử với grayscale contrast
+  if (!parsedPlate) {
+    updateScannerProgress('⚡ Quét bổ sung...', 'Thử nghiệm phương sai tương phản...', 85);
+    try {
+      const fallbackCanvas = await preprocessGrayscaleOnly(dataUrl);
+      const res2 = await Tesseract.recognize(fallbackCanvas, 'eng', {
+        tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-'
+      });
+      const rawText2 = res2?.data?.text || '';
+      parsedPlate = cleanAndNormalizePlateText(rawText2);
+      if (parsedPlate) {
+        rawText = rawText2;
+        conf = res2?.data?.confidence ? Math.round(res2.data.confidence) / 100 : 0.7;
+      }
+    } catch (e2) {
+      console.warn('Lỗi OCR fallback:', e2);
+    }
+  }
+
   return {
     plate: parsedPlate,
-    confidence: res?.data?.confidence ? Math.round(res.data.confidence) / 100 : 0.75,
+    confidence: conf,
     rawText
   };
 }
@@ -3766,6 +3912,47 @@ function updateScannerProgress(title, sub, pct = null) {
   if (bar && pct !== null) bar.style.width = `${Math.min(100, Math.max(5, pct))}%`;
 }
 
+// Kiểm tra và cập nhật banner trạng thái AI trên modal quét
+async function checkScannerAiStatus() {
+  const banner = document.getElementById('scannerAiBanner');
+  const icon = document.getElementById('scannerAiIcon');
+  const text = document.getElementById('scannerAiText');
+  const btn = document.getElementById('scannerAiKeyBtn');
+  if (!banner) return;
+
+  const localKey = (localStorage.getItem('gemini_api_key') || '').trim();
+  let serverConfigured = false;
+
+  try {
+    const res = await apiFetch('/api/settings');
+    if (res.ok) {
+      const data = await res.json();
+      serverConfigured = !!data.gemini_configured;
+    }
+  } catch (e) {}
+
+  const hasKey = !!localKey || serverConfigured;
+  ScannerState.isAiConfigured = hasKey;
+
+  if (hasKey) {
+    banner.className = 'p-2.5 rounded-xl text-xs flex items-center justify-between transition-all bg-emerald-50 border border-emerald-200 text-emerald-900';
+    if (icon) icon.textContent = '✨';
+    if (text) text.innerHTML = '<b>Google Gemini AI Vision:</b> Đã sẵn sàng (Nhận diện siêu tốc & chuẩn xác 99%).';
+    if (btn) {
+      btn.className = 'ml-2 shrink-0 px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-[11px] shadow-sm transition';
+      btn.textContent = '⚙️ Đổi Key';
+    }
+  } else {
+    banner.className = 'p-2.5 rounded-xl text-xs flex items-center justify-between transition-all bg-amber-50 border border-amber-200 text-amber-900';
+    if (icon) icon.textContent = '⚡';
+    if (text) text.innerHTML = 'Đang dùng <b>OCR Thiết Bị</b>. Nhập Gemini Key miễn phí để đọc chuẩn 100%.';
+    if (btn) {
+      btn.className = 'ml-2 shrink-0 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg font-bold text-[11px] shadow-sm transition';
+      btn.textContent = '🔑 Cài Key AI';
+    }
+  }
+}
+
 // Mở Modal Quét Biển Số
 async function openPlateScannerModal() {
   const modal = document.getElementById('plateScannerModal');
@@ -3773,6 +3960,7 @@ async function openPlateScannerModal() {
   modal.classList.remove('hidden');
 
   resetScannerView();
+  checkScannerAiStatus();
   await startScannerCamera();
 }
 
@@ -3781,6 +3969,51 @@ function closePlateScannerModal() {
   stopScannerCamera();
   const modal = document.getElementById('plateScannerModal');
   if (modal) modal.classList.add('hidden');
+}
+
+// Modal Cấu hình nhanh Gemini API Key
+function openQuickAiKeyModal() {
+  const modal = document.getElementById('quickAiKeyModal');
+  const input = document.getElementById('quick_gemini_key_input');
+  if (input) {
+    input.value = localStorage.getItem('gemini_api_key') || '';
+  }
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeQuickAiKeyModal() {
+  const modal = document.getElementById('quickAiKeyModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function toggleQuickKeyVisibility() {
+  const input = document.getElementById('quick_gemini_key_input');
+  if (!input) return;
+  input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+async function saveQuickAiKey() {
+  const input = document.getElementById('quick_gemini_key_input');
+  const keyVal = (input?.value || '').trim();
+
+  if (keyVal) {
+    localStorage.setItem('gemini_api_key', keyVal);
+  } else {
+    localStorage.removeItem('gemini_api_key');
+  }
+
+  // Thử đồng bộ lên máy chủ nếu có quyền
+  try {
+    await apiFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gemini_api_key: keyVal })
+    });
+  } catch (e) {}
+
+  closeQuickAiKeyModal();
+  checkScannerAiStatus();
+  showToast(keyVal ? '✓ Đã kích hoạt Google Gemini AI Vision thành công!' : 'Đã xóa API Key.', 'success');
 }
 
 // Bật Camera WebRTC
@@ -3858,25 +4091,64 @@ function resetScannerView() {
   if (controls) controls.classList.remove('hidden');
 }
 
-// Bấm nút Chụp & Nhận Diện từ video camera
+// Bấm nút Chụp & Nhận Diện từ video camera - Cắt chuẩn xác theo khung viền scannerTargetBox
 async function captureAndRecognize() {
   if (ScannerState.isScanning) return;
 
   const video = document.getElementById('scannerVideo');
-  const canvas = document.getElementById('scannerCanvas') || document.createElement('canvas');
+  const targetBox = document.getElementById('scannerTargetBox');
 
   if (!video || !video.videoWidth) {
     document.getElementById('scannerFileInput')?.click();
     return;
   }
 
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  // 1. Chụp toàn cảnh video
+  const fullCanvas = document.createElement('canvas');
+  fullCanvas.width = video.videoWidth;
+  fullCanvas.height = video.videoHeight;
+  const fullCtx = fullCanvas.getContext('2d');
+  fullCtx.drawImage(video, 0, 0, fullCanvas.width, fullCanvas.height);
+  const fullDataUrl = fullCanvas.toDataURL('image/jpeg', 0.88);
 
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-  await processPlateRecognition(dataUrl);
+  // 2. Cắt chính xác vùng khung ngắm vàng scannerTargetBox trên video thực tế
+  let cropDataUrl = fullDataUrl;
+  if (targetBox) {
+    const videoRect = video.getBoundingClientRect();
+    const boxRect = targetBox.getBoundingClientRect();
+
+    if (videoRect.width > 0 && videoRect.height > 0) {
+      const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
+      const renderedWidth = video.videoWidth * scale;
+      const renderedHeight = video.videoHeight * scale;
+      const offsetX = (renderedWidth - videoRect.width) / 2;
+      const offsetY = (renderedHeight - videoRect.height) / 2;
+
+      const boxLeft = (boxRect.left - videoRect.left) + offsetX;
+      const boxTop = (boxRect.top - videoRect.top) + offsetY;
+
+      // Thêm lề 8% để không bao giờ bị cắt mất ký tự rìa
+      const padW = boxRect.width * 0.08;
+      const padH = boxRect.height * 0.08;
+
+      const cropX = Math.max(0, Math.round((boxLeft - padW) / scale));
+      const cropY = Math.max(0, Math.round((boxTop - padH) / scale));
+      const cropW = Math.min(video.videoWidth - cropX, Math.round((boxRect.width + 2 * padW) / scale));
+      const cropH = Math.min(video.videoHeight - cropY, Math.round((boxRect.height + 2 * padH) / scale));
+
+      if (cropW > 50 && cropH > 30) {
+        const cropCanvas = document.createElement('canvas');
+        cropCanvas.width = cropW;
+        cropCanvas.height = cropH;
+        const cropCtx = cropCanvas.getContext('2d');
+        cropCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        cropDataUrl = cropCanvas.toDataURL('image/jpeg', 0.92);
+      }
+    }
+  }
+
+  // Nhận diện trên ảnh crop, đồng thời lưu ảnh toàn cảnh làm bằng chứng phiếu
+  await processPlateRecognition(cropDataUrl, fullDataUrl);
 }
 
 // Xử lý khi người dùng chọn ảnh hoặc chụp ảnh từ máy
@@ -3887,23 +4159,23 @@ function handleScannerFileSelect(event) {
   const reader = new FileReader();
   reader.onload = async (e) => {
     const dataUrl = e.target.result;
-    await processPlateRecognition(dataUrl);
+    await processPlateRecognition(dataUrl, dataUrl);
   };
   reader.readAsDataURL(file);
 
-  // Đặt lại input để có thể chọn lại cùng 1 file nếu muốn
   event.target.value = '';
 }
 
 // Luồng nhận diện HYBRID cốt lõi (AI Cloud -> Fallback Local OCR)
-async function processPlateRecognition(dataUrl) {
+async function processPlateRecognition(cropDataUrl, fullDataUrl = null) {
   ScannerState.isScanning = true;
-  ScannerState.capturedDataUrl = dataUrl;
+  // Lưu ảnh phiếu: Ưu tiên ảnh chụp toàn cảnh nếu có
+  ScannerState.capturedDataUrl = fullDataUrl || cropDataUrl;
 
-  // Hiển thị ảnh chụp tĩnh lên viewfinder
+  // Hiển thị ảnh chụp lên viewfinder
   const preview = document.getElementById('scannerCapturedPreview');
   if (preview) {
-    preview.src = dataUrl;
+    preview.src = cropDataUrl || fullDataUrl;
     preview.classList.remove('hidden');
   }
 
@@ -3918,14 +4190,19 @@ async function processPlateRecognition(dataUrl) {
   let recognizedPlate = null;
   let method = 'gemini';
   let confidence = 0.95;
-  let vehicleType = '';
 
-  // BƯỚC 1: Thử nhận diện bằng AI Vision (Cloud Gemini 3.8 Flash)
+  const localKey = (localStorage.getItem('gemini_api_key') || '').trim();
+
+  // BƯỚC 1: Thử nhận diện bằng Google Gemini AI Vision
   try {
     const res = await apiFetch('/api/ai/recognize-plate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: dataUrl })
+      body: JSON.stringify({ 
+        image: cropDataUrl,
+        full_image: fullDataUrl,
+        api_key: localKey
+      })
     });
 
     const aiResult = await res.json();
@@ -3933,19 +4210,22 @@ async function processPlateRecognition(dataUrl) {
       recognizedPlate = aiResult.plate;
       confidence = aiResult.confidence || 0.98;
       method = 'gemini';
-      vehicleType = aiResult.vehicle_type || '';
+      ScannerState.isAiConfigured = true;
     } else {
-      console.log('AI Vision phản hồi cần fallback:', aiResult.message);
+      console.log('AI Vision chuyển hướng fallback:', aiResult.message);
+      if (aiResult.error === 'NO_API_KEY') {
+        ScannerState.isAiConfigured = false;
+      }
     }
   } catch (aiErr) {
     console.warn('Lỗi gọi AI Cloud (chuyển sang OCR thiết bị):', aiErr.message);
   }
 
-  // BƯỚC 2: Nếu AI Cloud không đọc được hoặc không có API Key, chạy OCR Thiết Bị Cục Bộ
+  // BƯỚC 2: Nếu AI Cloud chưa đọc được hoặc chưa cài API Key, chạy OCR Thiết Bị Cục Bộ trên ảnh crop
   if (!recognizedPlate) {
-    updateScannerProgress('⚡ Chuyển sang OCR thiết bị...', 'Nhận diện cục bộ trên trình duyệt/Android...', 45);
+    updateScannerProgress('⚡ Chuyển sang OCR thiết bị...', 'Đang quét ký tự biển số trên thiết bị...', 45);
     try {
-      const ocrResult = await recognizeWithClientOcr(dataUrl);
+      const ocrResult = await recognizeWithClientOcr(cropDataUrl);
       if (ocrResult && ocrResult.plate) {
         recognizedPlate = ocrResult.plate;
         confidence = ocrResult.confidence || 0.8;
@@ -4200,4 +4480,9 @@ window.loadAiSettings = loadAiSettings;
 window.saveAiSettings = saveAiSettings;
 window.toggleApiKeyVisibility = toggleApiKeyVisibility;
 window.testGeminiConnection = testGeminiConnection;
+window.openQuickAiKeyModal = openQuickAiKeyModal;
+window.closeQuickAiKeyModal = closeQuickAiKeyModal;
+window.toggleQuickKeyVisibility = toggleQuickKeyVisibility;
+window.saveQuickAiKey = saveQuickAiKey;
+window.checkScannerAiStatus = checkScannerAiStatus;
 

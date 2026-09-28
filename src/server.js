@@ -211,8 +211,8 @@ Nếu ảnh mờ hoặc không có biển số xe, trả về:
     console.warn('[Gemini Interactions]:', e.message);
   }
 
-  // 2. Fallback GenerateContent API (gemini-3.8-flash hoặc gemini-flash-latest)
-  const models = ['gemini-3.8-flash', 'gemini-flash-latest'];
+  // 2. Fallback GenerateContent API (gemini-3.8-flash, gemini-2.5-flash, gemini-1.5-flash hoặc gemini-flash-latest)
+  const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
   for (const m of models) {
     try {
       const genRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
@@ -2220,7 +2220,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const row = db.prepare("SELECT value FROM system_settings WHERE key = 'gemini_api_key'").get();
-      const apiKey = process.env.GEMINI_API_KEY || (row ? row.value : '');
+      const apiKey = (body.api_key || '').trim() || process.env.GEMINI_API_KEY || (row ? row.value : '');
 
       if (!apiKey) {
         return sendJson(res, 200, {
