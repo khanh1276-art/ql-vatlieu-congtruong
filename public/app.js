@@ -20,23 +20,62 @@ const AppState = {
 };
 
 // ============================================================================
-// 1. API FETCH WRAPPER (TỰ ĐỘNG GẮN TOKEN & BẢO MẬT)
+// 1. API FETCH WRAPPER (TỰ ĐỘNG GẮN TOKEN, BẢO MẬT & HỖ TRỢ HYBRID ANDROID/WEB)
 // ============================================================================
-async function apiFetch(url, options = {}) {
+const API_DEFAULT_BASE = 'https://ql-vatlieu-congtruong.onrender.com';
+
+function getApiBaseUrl() {
+  if (typeof NativeApp !== 'undefined' && NativeApp.getServerUrl) {
+    return NativeApp.getServerUrl();
+  }
+  const saved = localStorage.getItem('native_server_url');
+  if (saved) return saved;
+
+  // Phát hiện môi trường chạy Android App (Capacitor Webview / file:// / capacitor://)
+  const isMobileApp = typeof window.Capacitor !== 'undefined' ||
+                      window.location.protocol === 'capacitor:' ||
+                      window.location.protocol === 'file:' ||
+                      (window.location.hostname === 'localhost' && !window.location.port);
+  if (isMobileApp) {
+    return API_DEFAULT_BASE;
+  }
+
+  // Môi trường Web thông thường (Render hoặc localhost web server port 3000)
+  return '';
+}
+
+async function apiFetch(endpoint, options = {}) {
+  let fullUrl = endpoint;
+  if (!endpoint.startsWith('http://') && !endpoint.startsWith('https://')) {
+    const base = getApiBaseUrl();
+    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    fullUrl = base ? `${base}${cleanEndpoint}` : cleanEndpoint;
+  }
+
   const headers = Object.assign({}, options.headers || {});
   if (AppState.token) {
     headers['Authorization'] = `Bearer ${AppState.token}`;
   }
-  const res = await fetch(url, { ...options, headers });
-  if (!res.ok) {
-    if (res.status === 401) {
-      handleUnauthorized();
-      throw new Error('Chưa đăng nhập hoặc phiên làm việc đã hết hạn');
+
+  try {
+    const res = await fetch(fullUrl, { ...options, headers });
+    if (!res.ok) {
+      let errData = {};
+      try {
+        errData = await res.json();
+      } catch (_) {}
+      if (res.status === 401 && !endpoint.includes('/api/auth/login')) {
+        handleUnauthorized();
+      }
+      throw new Error(errData.error || `Yêu cầu thất bại (Mã lỗi: ${res.status})`);
     }
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || `Yêu cầu thất bại (Mã lỗi: ${res.status})`);
+    return res;
+  } catch (err) {
+    if (typeof NativeApp !== 'undefined' && NativeApp.vibrateError) {
+      NativeApp.vibrateError();
+    }
+    throw err;
   }
-  return res;
 }
 
 // ============================================================================
@@ -1596,7 +1635,14 @@ function exportDailyExcel() {
   if (projectId) url += `&projectId=${projectId}`;
   if (supplierId) url += `&supplierId=${supplierId}`;
   if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
-  window.location.href = url;
+
+  const base = getApiBaseUrl();
+  const fullUrl = `${base}${url}`;
+  if (base) {
+    window.open(fullUrl, '_blank');
+  } else {
+    window.location.href = fullUrl;
+  }
 }
 
 // ============================================================================
@@ -1715,7 +1761,14 @@ function exportCumulativeExcel() {
   let url = `/api/reports/export-excel?type=cumulative&startDate=${startDate}&endDate=${endDate}`;
   if (projectId) url += `&projectId=${projectId}`;
   if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
-  window.location.href = url;
+
+  const base = getApiBaseUrl();
+  const fullUrl = `${base}${url}`;
+  if (base) {
+    window.open(fullUrl, '_blank');
+  } else {
+    window.location.href = fullUrl;
+  }
 }
 
 // ============================================================================
@@ -3206,7 +3259,13 @@ function closeImportExcelModal() {
 }
 
 function downloadImportTemplate() {
-  window.location.href = '/api/reports/download-import-template';
+  const base = getApiBaseUrl();
+  const fullUrl = `${base}/api/reports/download-import-template`;
+  if (base) {
+    window.open(fullUrl, '_blank');
+  } else {
+    window.location.href = fullUrl;
+  }
 }
 
 function handleImportDragOver(e) {
