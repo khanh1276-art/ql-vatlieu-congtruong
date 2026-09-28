@@ -123,11 +123,27 @@ function generateTicketCode(customDateOrString = null) {
   return `${prefix}${String(nextSeq).padStart(4, '0')}`;
 }
 
-// Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Cục Đăng Kiểm
-// Quy chuẩn ô tô: [Mã tỉnh: đúng 2 số 11-99][Sê-ri: 1-2 chữ cái]-[Dãy số: xxx.xx hoặc xxxx]
+// Danh mục 81 mã tỉnh thành và cơ quan đăng ký xe cơ giới hợp lệ tại Việt Nam theo Thông tư BCA
+const VALID_PROVINCE_CODES = new Set([
+  '11', '12', '14', '15', '16', '17', '18', '19', '20',
+  '21', '22', '23', '24', '25', '26', '27', '28', '29', '30',
+  '31', '32', '33', '34', '35', '36', '37', '38', '39', '40',
+  '41', '43', '47', '48', '49', '50', '51', '52', '53', '54',
+  '55', '56', '57', '58', '59', '60', '61', '62', '63', '64',
+  '65', '66', '67', '68', '69', '70', '71', '72', '73', '74',
+  '75', '76', '77', '78', '79', '80', '81', '82', '83', '84',
+  '85', '86', '88', '89', '90', '92', '93', '94', '95', '97',
+  '98', '99'
+]);
+
+// 20 chữ cái hợp lệ theo quy chuẩn Bộ Công An (Ảnh 1) + 'R' cho rơ-moóc xe tải vật tư
+// A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z, R (loại trừ I, J, O, Q, W)
+const VALID_SERIES_LETTERS = 'ABCDEFGHKLMNPSTUVWXYZR';
+
+// Chuẩn hóa và làm sạch biển số xe Việt Nam theo quy chuẩn Bộ Công An
+// Quy chuẩn ô tô: [Mã tỉnh: đúng 2 số trong danh mục 81 mã tỉnh][Sê-ri: 1-2 chữ cái]-[Dãy số: xxx.xx hoặc xxxx]
 function cleanAndNormalizePlateText(text) {
-  if (!text) return null;
-  const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
+  if (!text || typeof text !== 'string') return null;
 
   const fixDigits = (s) => (s || '')
     .replace(/[ODQ]/g, '0')
@@ -140,102 +156,126 @@ function cleanAndNormalizePlateText(text) {
     .replace(/[T]/g, '7')
     .replace(/[B]/g, '8');
 
-  // Matcher prefix xe ô tô Việt Nam:
-  // Luôn là 2 CHỮ SỐ MÃ TỈNH (11-99) ngay trước CHỮ CÁI SÊ-RI (A-Z)
-  // Bỏ qua mọi số/ký tự rác phía trước (như '351H', '151H', '029C', '.51H')
-  const prefixRegex = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])(?![A-Z])/;
+  // Làm sạch văn bản thô
+  const clean = text.replace(/[^a-zA-Z0-9.\-\n\s]/g, ' ').toUpperCase();
+
+  // Hàm chọn mã tỉnh 2 số hợp lệ từ chuỗi số
+  function pickValidProvince(digitsStr) {
+    if (!digitsStr || digitsStr.length < 2) return null;
+    // Ưu tiên 2 số cuối cùng ngay trước sê-ri
+    const cand = digitsStr.slice(-2);
+    if (VALID_PROVINCE_CODES.has(cand)) return cand;
+    // Nếu có > 2 số, kiểm tra các cặp 2 số từ phải sang trái
+    for (let k = digitsStr.length - 2; k >= 0; k--) {
+      const c = digitsStr.slice(k, k + 2);
+      if (VALID_PROVINCE_CODES.has(c)) return c;
+    }
+    return null;
+  }
 
   // Tách dòng
   const rawLines = clean.split('\n').map(l => l.trim().replace(/\s+/g, '')).filter(Boolean);
 
   // PASS 1: Quét trên các dòng riêng biệt (Biển vuông 2 dòng)
+  const linePrefixRegex = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![A-Z0-9])`);
   for (let i = 0; i < rawLines.length; i++) {
     const l1 = rawLines[i];
-    const mPref = l1.match(prefixRegex);
+    const mPref = l1.match(linePrefixRegex);
     if (mPref) {
-      const prov = mPref[1];
-      const ser = mPref[2];
-
-      // Tìm số ở các dòng tiếp theo
-      for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
-        const l2 = rawLines[j];
-
-        // 1.1: Dòng 2 có 5 số có chấm: '919.91', '1919.91', '|919.91'
-        const mDot = l2.match(/([0-9]{3})\.([0-9]{2})(?![0-9])/);
-        if (mDot) {
-          return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
-        }
-
-        // 1.2: Dòng 2 là dãy số liền (nếu dính viền 6 số như 191991, lấy đúng 5 số cuối):
-        const digitsOnly = l2.replace(/[^0-9]/g, '');
-        if (digitsOnly.length >= 5) {
-          const last5 = digitsOnly.slice(-5);
-          return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
-        }
-
-        // 1.3: Biển 4 số cũ: đúng 4 số
-        if (digitsOnly.length === 4) {
-          return `${prov}${ser}-${digitsOnly}`;
+      const prov = pickValidProvince(mPref[1]);
+      if (prov) {
+        const ser = mPref[2];
+        for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
+          const l2 = rawLines[j];
+          const mDot = l2.match(/([0-9]{3})\.([0-9]{2})(?![0-9])/);
+          if (mDot) {
+            return `${prov}${ser}-${mDot[1]}.${mDot[2]}`;
+          }
+          const digitsOnly = l2.replace(/[^0-9]/g, '');
+          if (digitsOnly.length >= 5) {
+            const last5 = digitsOnly.slice(-5);
+            return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
+          }
+          if (digitsOnly.length === 4) {
+            return `${prov}${ser}-${digitsOnly}`;
+          }
         }
       }
     }
   }
 
-  // PASS 2: Quét trên toàn bộ văn bản gộp (Biển 1 dòng)
+  // PASS 2: Quét trên toàn bộ văn bản gộp (Biển 1 dòng dài)
   const flat = clean.replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
 
   // 2.1: Biển 5 số có chấm: VD '51H-919.91', '351H-919.91', '29C-881.23'
-  const rFlat5Dot = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*([0-9]{3})\s*[-.]\s*([0-9]{2})(?![0-9])/;
+  const rFlat5Dot = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9]{3})\\s*[-.]\\s*([0-9]{2})(?![0-9])`);
   let mf = flat.match(rFlat5Dot);
-  if (mf) return `${mf[1]}${mf[2]}-${mf[3]}.${mf[4]}`;
+  if (mf) {
+    const prov = pickValidProvince(mf[1]);
+    if (prov) return `${prov}${mf[2]}-${mf[3]}.${mf[4]}`;
+  }
 
   // 2.2: Biển 5 số liền: VD '51H 91991', '351H 91991', '51H 191991'
-  const rFlat5Plain = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*(?:[0-9]*?)([0-9]{3})([0-9]{2})(?![0-9])/;
+  const rFlat5Plain = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*(?:[0-9]*?)([0-9]{3})([0-9]{2})(?![0-9])`);
   mf = flat.match(rFlat5Plain);
-  if (mf) return `${mf[1]}${mf[2]}-${mf[3]}.${mf[4]}`;
+  if (mf) {
+    const prov = pickValidProvince(mf[1]);
+    if (prov) return `${prov}${mf[2]}-${mf[3]}.${mf[4]}`;
+  }
 
   // 2.3: Biển 4 số: VD '30H-9999', '29C 8888'
-  const rFlat4 = /([1-9][0-9])\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*([0-9]{4})(?![0-9.])/;
+  const rFlat4 = new RegExp(`([0-9]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9]{4})(?![0-9.])`);
   mf = flat.match(rFlat4);
-  if (mf) return `${mf[1]}${mf[2]}-${mf[3]}`;
+  if (mf) {
+    const prov = pickValidProvince(mf[1]);
+    if (prov) return `${prov}${mf[2]}-${mf[3]}`;
+  }
 
-  // PASS 3: Fallback sửa lỗi ký tự OCR tương đồng
+  // PASS 3: Fallback sửa lỗi OCR ký tự tương đồng
+  // 3.1: Dòng vuông với lỗi OCR
+  const linePrefixPass3 = new RegExp(`([0-9A-Z]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])(?![A-Z0-9])`);
   for (let i = 0; i < rawLines.length; i++) {
-    let l1 = rawLines[i];
-    let m1 = l1.match(/([0-9A-Z]{2})\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])(?![A-Z0-9])/);
-    if (m1) {
-      const prov = fixDigits(m1[1]);
-      let ser = m1[2];
-      if (/^[0-9]+$/.test(ser)) continue;
-      if (!/^[1-9][0-9]$/.test(prov)) continue;
-
-      for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
-        let l2 = rawLines[j];
-        const l2Digits = fixDigits(l2).replace(/[^0-9]/g, '');
-        const mDot2 = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})/);
-        if (mDot2) {
-          return `${prov}${ser}-${fixDigits(mDot2[1])}.${fixDigits(mDot2[2])}`;
-        }
-        if (l2Digits.length >= 5) {
-          const last5 = l2Digits.slice(-5);
-          return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
-        }
-        if (l2Digits.length === 4) {
-          return `${prov}${ser}-${l2Digits}`;
+    const l1 = rawLines[i];
+    const mPref = l1.match(linePrefixPass3);
+    if (mPref) {
+      const fixedPre = fixDigits(mPref[1]).replace(/[^0-9]/g, '');
+      const prov = pickValidProvince(fixedPre);
+      if (prov) {
+        const ser = mPref[2];
+        for (let j = i + 1; j < Math.min(rawLines.length, i + 3); j++) {
+          const l2 = rawLines[j];
+          const mDot = l2.match(/([0-9A-Z]{3})\.([0-9A-Z]{2})/);
+          if (mDot) {
+            const n1 = fixDigits(mDot[1]);
+            const n2 = fixDigits(mDot[2]);
+            if (/^[0-9]{3}$/.test(n1) && /^[0-9]{2}$/.test(n2)) {
+              return `${prov}${ser}-${n1}.${n2}`;
+            }
+          }
+          const digitsOnly = fixDigits(l2).replace(/[^0-9]/g, '');
+          if (digitsOnly.length >= 5) {
+            const last5 = digitsOnly.slice(-5);
+            return `${prov}${ser}-${last5.slice(0, 3)}.${last5.slice(3)}`;
+          }
+          if (digitsOnly.length === 4) {
+            return `${prov}${ser}-${digitsOnly}`;
+          }
         }
       }
     }
   }
 
-  // 3.2: Biển 1 dòng có sai lệch ký tự
-  const flatPerm = /([0-9A-Z]{2})\s*([A-Z]{2}|[A-Z][0-9]|[A-Z])\s*[-.\s]?\s*([0-9A-Z]{3})\s*[-.]?\s*([0-9A-Z]{2})(?![0-9A-Z])/;
-  mf = flat.match(flatPerm);
+  // 3.2: Biển 1 dòng phẳng với lỗi OCR
+  const rPass3 = new RegExp(`([0-9A-Z]{2,4})\\s*([${VALID_SERIES_LETTERS}]{1,2}|[${VALID_SERIES_LETTERS}][0-9])\\s*[-.\\s]?\\s*([0-9A-Z]{3})\\s*[-.]?\\s*([0-9A-Z]{2})(?![0-9A-Z])`);
+  mf = flat.match(rPass3);
   if (mf) {
-    const prov = fixDigits(mf[1]);
-    const ser = mf[2];
-    const num = fixDigits(mf[3]) + '.' + fixDigits(mf[4]);
-    if (/^[1-9][0-9]$/.test(prov) && !/^[0-9]+$/.test(ser)) {
-      return `${prov}${ser}-${num}`;
+    const fixedPre = fixDigits(mf[1]).replace(/[^0-9]/g, '');
+    const prov = pickValidProvince(fixedPre);
+    if (prov) {
+      const numPart = `${fixDigits(mf[3])}.${fixDigits(mf[4])}`;
+      if (/^[0-9]{3}\.[0-9]{2}$/.test(numPart)) {
+        return `${prov}${mf[2]}-${numPart}`;
+      }
     }
   }
 
@@ -284,17 +324,17 @@ function parseGeminiPlateResult(rawText) {
 
 // Gọi API Gemini Vision để đọc biển số xe từ ảnh base64
 async function callGeminiLicensePlate(apiKey, base64Data, mimeType = 'image/jpeg') {
-  const prompt = `Bạn là hệ thống nhận diện biển số xe cơ giới thông minh tại công trường Việt Nam.
-Nhiệm vụ: Đọc chính xác biển số xe cơ giới (xe tải ben, xe bồn, đầu kéo mooc, container, xe chở vật liệu) trong bức ảnh được cung cấp.
-Quy chuẩn biển số xe cơ giới tại Việt Nam:
-- Mã tỉnh (2 chữ số: 15, 29, 30, 51, 60,...) + Sê-ri chữ cái (1 hoặc 2 chữ: C, D, H, K, LD, R, RM...) + Dấu gạch ngang + Dãy số thứ tự (4 hoặc 5 số).
-- Biển 1 dòng (dài): VD 29C-881.23, 15C-345.67, 30H-9999, 29R-012.34
-- Biển 2 dòng (vuông): Dòng trên "29C", dòng dưới "881.23" -> Ghép lại thành "29C-881.23".
-Yêu cầu kết quả trả về:
-1. Chuẩn hóa biển số thành chữ in hoa, có gạch nối phân cách: ví dụ "29C-881.23", "51H-919.91", "51D-123.45".
-2. Trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm giải thích, không markdown code fence):
-{"plate": "29C-881.23", "confidence": 0.98, "vehicle_type": "Xe tải ben", "notes": "Biển số rõ nét"}
-Nếu ảnh mờ hoặc không có biển số xe, trả về:
+  const prompt = `Bạn là hệ thống AI nhận diện biển số xe cơ giới chuyên dụng tại công trường Việt Nam.
+Nhiệm vụ: Đọc chính xác biển số xe cơ giới (xe tải ben, xe bồn, đầu kéo mooc, container, xe chở vật liệu) trong ảnh.
+Quy chuẩn biển số ô tô Việt Nam theo quy định Bộ Công An:
+1. Cấu trúc bắt buộc: [Mã địa phương][Sê-ri]-[Dãy số thứ tự]
+   - Mã địa phương: Đúng 2 chữ số thuộc 81 mã tỉnh thành Việt Nam (VD: 51, 50, 52, 29, 30, 14, 15, 60, 61, 72, 80, 98, 99...). Tuyệt đối không đọc ra 3 số ở đầu (như '351H' là sai, phải là '51H' do số 3 là viền rác hoặc bóng phản chiếu).
+   - Sê-ri đăng ký: Gồm 20 chữ cái in hoa chuẩn: A, B, C, D, E, F, G, H, K, L, M, N, P, S, T, U, V, X, Y, Z (hoặc R cho rơ-moóc; không dùng I, J, O, Q, W). Có thể là 1 chữ cái, 2 chữ cái (LD, DA, RM) hoặc chữ + số (C1, A1, D1).
+   - Dãy số: 5 chữ số có chấm phân cách 'xxx.xx' (VD: 919.91, 881.23) hoặc 4 số cũ 'xxxx' (VD: 9999).
+2. Chuẩn hóa biển số thành dạng: "51H-919.91", "29C-881.23", "60C-123.45", "15R-012.34".
+Trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm markdown):
+{"plate": "51H-919.91", "confidence": 0.98, "vehicle_type": "Xe tải", "notes": "Biển số rõ nét"}
+Nếu không phát hiện được biển số xe, trả về:
 {"plate": null, "confidence": 0, "vehicle_type": null, "notes": "Không phát hiện biển số xe"}`;
 
   // GenerateContent API (gemini-2.5-flash, gemini-2.0-flash, gemini-1.5-flash)
