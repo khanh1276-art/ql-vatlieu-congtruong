@@ -14,7 +14,7 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] unhandledRejection:', reason);
 });
 
-const { db, hashPassword, verifyPassword } = require('./db.js');
+const { db, hashPassword, verifyPassword, seedFromInitialJsonIfAvailable } = require('./db.js');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -562,6 +562,24 @@ const server = http.createServer(async (req, res) => {
   const method = req.method;
 
   try {
+    // =========================================================================
+    // 0. API ĐỒNG BỘ DỮ LIỆU TỪ SEED (SYNC DATA ENDPOINT)
+    // =========================================================================
+    if ((pathname === '/api/sync-data' || pathname === '/api/admin/sync-seed') && (method === 'GET' || method === 'POST')) {
+      const result = seedFromInitialJsonIfAvailable();
+      const hoaYenProj = db.prepare("SELECT id, name FROM projects WHERE name LIKE '%Hòa Yên%' OR code LIKE '%HOAYEN%' ORDER BY id ASC LIMIT 1").get();
+      const hyId = hoaYenProj ? hoaYenProj.id : 4;
+      const hoaYenTrips = db.prepare("SELECT COUNT(*) as c FROM tickets WHERE project_id = ? OR project_name LIKE '%Hòa Yên%'").get(hyId).c;
+      const totalTickets = db.prepare("SELECT COUNT(*) as c FROM tickets").get().c;
+      return sendJson(res, 200, {
+        success: result && result.success !== false,
+        syncResult: result,
+        hoaYenTrips,
+        totalTickets,
+        message: `Đồng bộ dữ liệu thành công! Tổng số chuyến Hòa Yên: ${hoaYenTrips}, Tổng số vé toàn hệ thống: ${totalTickets}`
+      });
+    }
+
     // =========================================================================
     // 1. API XÁC THỰC (AUTHENTICATION: LOGIN / LOGOUT / ME)
     // =========================================================================

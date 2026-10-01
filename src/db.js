@@ -318,22 +318,15 @@ function seedUsers() {
   console.log('Đã tạo thành công danh sách tài khoản mặc định!');
 }
 
-function seedFromInitialJsonIfAvailable() {
+function seedFromInitialJsonIfAvailable(force = false) {
   const seedPath = path.join(__dirname, '..', 'data', 'initial_seed.json');
   if (!fs.existsSync(seedPath)) return false;
-
-  const countTickets = db.prepare('SELECT COUNT(*) as count FROM tickets').get().count;
-  if (countTickets > 100) return true;
 
   try {
     const raw = fs.readFileSync(seedPath, 'utf8');
     const data = JSON.parse(raw);
-    console.log('[SEED] Đang nạp dữ liệu từ data/initial_seed.json...');
 
-    db.exec('PRAGMA foreign_keys = OFF;');
-    db.exec('BEGIN TRANSACTION;');
-
-    // Projects
+    // 1. Projects
     const insProj = db.prepare(`
       INSERT OR IGNORE INTO projects (id, code, name, location, status, notes, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -342,7 +335,12 @@ function seedFromInitialJsonIfAvailable() {
       insProj.run(p.id, p.code, p.name, p.location || '', p.status || 'ACTIVE', p.notes || '', p.created_at || null);
     }
 
-    // Suppliers
+    // Xác định chính xác project Hòa Yên trong DB hiện tại (dù id là 4 hay 5)
+    const hoaYenProj = db.prepare("SELECT id, name FROM projects WHERE name LIKE '%Hòa Yên%' OR code LIKE '%HOAYEN%' ORDER BY id ASC LIMIT 1").get();
+    const hyId = hoaYenProj ? hoaYenProj.id : 4;
+    const hyName = hoaYenProj ? hoaYenProj.name : 'Dự án KCN Hòa Yên';
+
+    // 2. Suppliers
     const insSupp = db.prepare(`
       INSERT OR IGNORE INTO suppliers (id, code, name, phone, contact_person, notes, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -351,7 +349,29 @@ function seedFromInitialJsonIfAvailable() {
       insSupp.run(s.id, s.code, s.name, s.phone || '', s.contact_person || '', s.notes || '', s.created_at || null);
     }
 
-    // Materials
+    // Đảm bảo NCC Đức Phúc (ĐP) luôn có mặt
+    let checkDP = db.prepare("SELECT id FROM suppliers WHERE code = 'NCC-DUCPHUC' OR name LIKE '%Đức Phúc%'").get();
+    let ducPhucId = checkDP ? checkDP.id : 12;
+    if (!checkDP) {
+      try {
+        const resDP = db.prepare(`
+          INSERT INTO suppliers (code, name, notes, created_at)
+          VALUES ('NCC-DUCPHUC', 'Công ty TNHH Đức Phúc (ĐP)', 'Cung cấp Đất san lấp - Hòa Yên (Ký hiệu DAT-ĐP)', '2026-09-24 14:59:46')
+        `).run();
+        ducPhucId = resDP.lastInsertRowid;
+      } catch (e) {
+        const dpFallback = db.prepare("SELECT id FROM suppliers WHERE name LIKE '%Đức Phúc%' LIMIT 1").get();
+        if (dpFallback) ducPhucId = dpFallback.id;
+      }
+    }
+
+    const suppMap = {};
+    db.prepare('SELECT id, name, code FROM suppliers').all().forEach(s => {
+      if (s.code) suppMap[s.code] = s.id;
+      if (s.name) suppMap[s.name] = s.id;
+    });
+
+    // 3. Materials
     const insMat = db.prepare(`
       INSERT OR IGNORE INTO materials (id, code, name, unit, description, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -360,16 +380,21 @@ function seedFromInitialJsonIfAvailable() {
       insMat.run(m.id, m.code, m.name, m.unit || 'm³', m.description || '', m.created_at || null);
     }
 
-    // Vehicles
+    const matSanLap = db.prepare("SELECT id FROM materials WHERE code = 'DAT-SANLAP' OR name LIKE '%Đất san lấp%' LIMIT 1").get();
+    const datSanLapId = matSanLap ? matSanLap.id : 12;
+
+    // 4. Vehicles
     const insVeh = db.prepare(`
-      INSERT OR IGNORE INTO vehicles (id, plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, default_material_id, notes, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO vehicles (plate_number, model_type, supplier_id, project_id, length, width, height, standard_volume, unit, default_material_id, notes, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const v of data.vehicles || []) {
-      insVeh.run(v.id, v.plate_number, v.model_type || '', v.supplier_id || null, v.project_id || null, v.length || 0, v.width || 0, v.height || 0, v.standard_volume || 0, v.unit || 'm³', v.default_material_id || null, v.notes || '', v.created_at || null);
+      let sId = v.supplier_id;
+      if (v.supplier_name && suppMap[v.supplier_name]) sId = suppMap[v.supplier_name];
+      insVeh.run(v.plate_number, v.model_type || '', sId || null, hyId, v.length || 0, v.width || 0, v.height || 0, v.standard_volume || 0, v.unit || 'm³', datSanLapId, v.notes || '', v.created_at || null);
     }
 
-    // Users
+    // 5. Users
     const insUser = db.prepare(`
       INSERT OR IGNORE INTO users (id, username, password_hash, full_name, role, project_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -378,33 +403,72 @@ function seedFromInitialJsonIfAvailable() {
       insUser.run(u.id, u.username, u.password_hash, u.full_name || '', u.role || 'SITE_USER', u.project_id || null, u.status || 'ACTIVE', u.created_at || null);
     }
 
-    // Tickets
-    const insTicket = db.prepare(`
-      INSERT OR IGNORE INTO tickets (
-        id, ticket_code, project_id, project_name, vehicle_id, plate_number,
-        supplier_id, supplier_name, material_id, material_name, unit,
-        time_in, time_out, length, width, height, standard_volume, actual_volume,
-        is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const t of data.tickets || []) {
-      insTicket.run(
-        t.id, t.ticket_code, t.project_id || null, t.project_name || '', t.vehicle_id || null, t.plate_number,
-        t.supplier_id || null, t.supplier_name || '', t.material_id || null, t.material_name || '', t.unit || 'm³',
-        t.time_in, t.time_out || null, t.length || 0, t.width || 0, t.height || 0, t.standard_volume || 0, t.actual_volume || 0,
-        t.is_manual_adjusted ? 1 : 0, t.adjustment_reason || '', t.status || 'COMPLETED', t.created_by || 'Hệ thống', t.notes || '', t.created_at || t.time_in
-      );
+    // 6. Tickets - Kiểm tra và nạp bổ sung toàn bộ vé chưa có trong DB
+    const existingCodes = new Set(
+      db.prepare('SELECT ticket_code FROM tickets').all().map(r => r.ticket_code)
+    );
+
+    const ticketsToInsert = (data.tickets || []).filter(t => !existingCodes.has(t.ticket_code));
+
+    if (ticketsToInsert.length > 0) {
+      console.log(`[SEED] Phát hiện ${ticketsToInsert.length} phiếu mới cần nạp vào DB (Hòa Yên ID = ${hyId})...`);
+      db.exec('PRAGMA foreign_keys = OFF;');
+      db.exec('BEGIN TRANSACTION;');
+
+      const insTicket = db.prepare(`
+        INSERT INTO tickets (
+          ticket_code, project_id, project_name, vehicle_id, plate_number,
+          supplier_id, supplier_name, material_id, material_name, unit,
+          time_in, time_out, length, width, height, standard_volume, actual_volume,
+          is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const t of ticketsToInsert) {
+        const isHoaYen = !t.project_id || t.project_id === 4 || t.project_id === 5 || (t.project_name && t.project_name.includes('Hòa Yên'));
+        const pId = isHoaYen ? hyId : t.project_id;
+        const pName = isHoaYen ? hyName : t.project_name;
+        
+        let suppId = t.supplier_id;
+        if (t.supplier_name && suppMap[t.supplier_name]) {
+          suppId = suppMap[t.supplier_name];
+        } else if (t.supplier_name && t.supplier_name.includes('Đức Phúc')) {
+          suppId = ducPhucId;
+        }
+
+        const matId = (t.material_id === 12 || (t.material_name && t.material_name.includes('Đất san lấp'))) ? datSanLapId : (t.material_id || datSanLapId);
+
+        insTicket.run(
+          t.ticket_code, pId, pName, t.vehicle_id || null, t.plate_number,
+          suppId || null, t.supplier_name || '', matId, t.material_name || 'Đất san lấp / Đất đắp', t.unit || 'm³',
+          t.time_in, t.time_out || null, t.length || 0, t.width || 0, t.height || 0, t.standard_volume || 0, t.actual_volume || 0,
+          t.is_manual_adjusted ? 1 : 0, t.adjustment_reason || '', t.status || 'CHECKED_OUT', t.created_by || 'Thủ kho Hòa Yên (Import)', t.notes || '', t.created_at || t.time_in
+        );
+      }
+
+      db.exec('COMMIT;');
+      db.exec('PRAGMA foreign_keys = ON;');
+      console.log(`[SEED] Đã nạp thành công ${ticketsToInsert.length} phiếu mới!`);
+    } else {
+      console.log('[SEED] Tất cả phiếu trong initial_seed.json đã có trong DB.');
     }
 
-    db.exec('COMMIT;');
-    db.exec('PRAGMA foreign_keys = ON;');
-    console.log(`[SEED] Đã nạp thành công ${(data.tickets || []).length} phiếu từ initial_seed.json!`);
-    return true;
+    const totalNow = db.prepare('SELECT COUNT(*) as count FROM tickets').get().count;
+    console.log(`[SEED] Tổng số phiếu hiện có trong DB: ${totalNow}`);
+    return {
+      success: true,
+      insertedCount: ticketsToInsert.length,
+      totalTickets: totalNow,
+      hoaYenId: hyId
+    };
   } catch (err) {
     try { db.exec('ROLLBACK;'); } catch (rbErr) {}
     try { db.exec('PRAGMA foreign_keys = ON;'); } catch (fkErr) {}
     console.error('[SEED] Lỗi khi nạp initial_seed.json:', err.message);
-    return false;
+    return {
+      success: false,
+      error: err.message
+    };
   }
 }
 
@@ -579,5 +643,6 @@ module.exports = {
   db,
   hashPassword,
   verifyPassword,
-  initSchema
+  initSchema,
+  seedFromInitialJsonIfAvailable
 };
