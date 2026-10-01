@@ -443,6 +443,12 @@ function seedFromInitialJsonIfAvailable(force = false) {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
+      const matMap = {};
+      db.prepare('SELECT id, name, code FROM materials').all().forEach(m => {
+        if (m.code) matMap[m.code] = m.id;
+        if (m.name) matMap[m.name] = m.id;
+      });
+
       for (const t of ticketsToInsert) {
         const isHoaYen = !t.project_id || t.project_id === 4 || t.project_id === 5 || (t.project_name && t.project_name.includes('Hòa Yên'));
         const pId = isHoaYen ? hyId : t.project_id;
@@ -455,7 +461,12 @@ function seedFromInitialJsonIfAvailable(force = false) {
           suppId = ducPhucId;
         }
 
-        const matId = (t.material_id === 12 || (t.material_name && t.material_name.includes('Đất san lấp'))) ? datSanLapId : (t.material_id || datSanLapId);
+        let matId = t.material_id;
+        if (t.material_name && matMap[t.material_name]) {
+          matId = matMap[t.material_name];
+        } else if (!matId) {
+          matId = datSanLapId;
+        }
 
         insTicket.run(
           t.ticket_code, pId, pName, t.vehicle_id || null, t.plate_number,
