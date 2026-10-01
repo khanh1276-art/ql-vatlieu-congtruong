@@ -319,10 +319,29 @@ function seedUsers() {
 }
 
 function seedFromInitialJsonIfAvailable(force = false) {
-  const seedPath = path.join(__dirname, '..', 'data', 'initial_seed.json');
-  if (!fs.existsSync(seedPath)) return false;
+  const candidatePaths = [
+    path.join(__dirname, '..', 'data_seed', 'initial_seed.json'),
+    path.join(__dirname, '..', 'data', 'initial_seed.json'),
+    path.join(__dirname, 'initial_seed.json'),
+    path.join(process.cwd(), 'data_seed', 'initial_seed.json'),
+    path.join(process.cwd(), 'data', 'initial_seed.json')
+  ];
+  let seedPath = candidatePaths.find(p => fs.existsSync(p));
+  if (!seedPath) {
+    console.warn('[SEED] Không tìm thấy tệp initial_seed.json ở bất kỳ đường dẫn nào:', candidatePaths);
+    return {
+      success: false,
+      error: 'File not found',
+      searched: candidatePaths
+    };
+  }
 
   try {
+    const destData = path.join(__dirname, '..', 'data', 'initial_seed.json');
+    if (!fs.existsSync(destData)) {
+      try { fs.copyFileSync(seedPath, destData); } catch (copyErr) {}
+    }
+
     const raw = fs.readFileSync(seedPath, 'utf8');
     const data = JSON.parse(raw);
 
