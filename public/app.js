@@ -3653,6 +3653,7 @@ const ScannerState = {
   stream: null,
   facingMode: 'environment', // 'environment' (sau) hoặc 'user' (trước)
   plateMode: localStorage.getItem('fecon_plate_mode') || 'square', // 'square' (biển vuông 330x165) hoặc 'long' (biển dài 520x110)
+  zoomLevel: 1.0, // Mức phóng đại camera hiện tại (1.0x -> 4.0x)
   capturedDataUrl: null,
   recognizedPlate: null,
   recognitionMethod: null, // 'gemini' hoặc 'tesseract'
@@ -4372,7 +4373,7 @@ async function saveQuickAiKey() {
   showToast(keyVal ? '✓ Đã kích hoạt Google Gemini AI Vision thành công!' : 'Đã xóa API Key.', 'success');
 }
 
-// Bật Camera WebRTC
+// Bật Camera WebRTC với độ phân giải cao nhất phần cứng hỗ trợ
 async function startScannerCamera() {
   const video = document.getElementById('scannerVideo');
   if (!video) return;
@@ -4386,11 +4387,12 @@ async function startScannerCamera() {
 
     let stream = null;
     try {
+      // Yêu cầu cảm biến mở độ phân giải tối đa (4K hoặc Full HD 1080p)
       stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: ScannerState.facingMode },
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
+          width: { ideal: 3840, min: 1920 },
+          height: { ideal: 2160, min: 1080 },
           advanced: [
             { focusMode: 'continuous' },
             { exposureMode: 'continuous' }
@@ -4399,14 +4401,29 @@ async function startScannerCamera() {
         audio: false
       });
     } catch (cErr) {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: ScannerState.facingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      });
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: ScannerState.facingMode },
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            advanced: [
+              { focusMode: 'continuous' },
+              { exposureMode: 'continuous' }
+            ]
+          },
+          audio: false
+        });
+      } catch (cErr2) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: ScannerState.facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+      }
     }
 
     ScannerState.stream = stream;
@@ -4414,7 +4431,7 @@ async function startScannerCamera() {
     await video.play();
   } catch (err) {
     console.warn('Không thể mở camera stream trực tiếp:', err.message);
-    showToast('Camera trực tiếp không sẵn sàng. Vui lòng bấm [Tải / Chụp Ảnh] để chụp!', 'info');
+    showToast('Camera trực tiếp không sẵn sàng. Vui lòng bấm [Camera Máy] để chụp!', 'info');
   }
 }
 
@@ -4427,7 +4444,11 @@ function stopScannerCamera() {
     ScannerState.stream = null;
   }
   const video = document.getElementById('scannerVideo');
-  if (video) video.srcObject = null;
+  if (video) {
+    video.srcObject = null;
+    video.style.transform = 'scale(1)';
+  }
+  ScannerState.zoomLevel = 1.0;
 }
 
 // Đổi camera Trước / Sau
@@ -4435,6 +4456,97 @@ async function switchCameraFacing() {
   ScannerState.facingMode = ScannerState.facingMode === 'environment' ? 'user' : 'environment';
   showToast(`Chuyển sang camera ${ScannerState.facingMode === 'environment' ? 'sau' : 'trước'}`, 'info');
   await startScannerCamera();
+}
+
+// Điều chỉnh mức độ Zoom Camera (Hỗ trợ cả Hardware Zoom của Camera và Hybrid Digital Scale)
+async function setScannerZoom(level, isRelative = false) {
+  let targetZoom = isRelative ? (ScannerState.zoomLevel + level) : level;
+  targetZoom = Math.max(1.0, Math.min(4.0, Math.round(targetZoom * 10) / 10));
+  ScannerState.zoomLevel = targetZoom;
+
+  const video = document.getElementById('scannerVideo');
+  if (video) {
+    video.style.transformOrigin = 'center center';
+    video.style.transform = `scale(${targetZoom})`;
+  }
+
+  // Cố gắng áp dụng Hardware Zoom thông qua MediaStreamTrack nếu thiết bị hỗ trợ
+  if (ScannerState.stream) {
+    const track = ScannerState.stream.getVideoTracks()[0];
+    if (track) {
+      try {
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        if (capabilities.zoom) {
+          const hwMin = capabilities.zoom.min || 1;
+          const hwMax = capabilities.zoom.max || 1;
+          const hwZoom = Math.min(hwMax, Math.max(hwMin, targetZoom));
+          await track.applyConstraints({
+            advanced: [{ zoom: hwZoom }]
+          });
+        }
+      } catch (err) {}
+    }
+  }
+
+  // Cập nhật trạng thái Active trên các nút Zoom UI
+  const zoomBtns = [
+    { id: 'btnZoom1x', val: 1.0 },
+    { id: 'btnZoom15x', val: 1.5 },
+    { id: 'btnZoom2x', val: 2.0 },
+    { id: 'btnZoom3x', val: 3.0 }
+  ];
+
+  zoomBtns.forEach(item => {
+    const btn = document.getElementById(item.id);
+    if (btn) {
+      if (Math.abs(item.val - targetZoom) < 0.15) {
+        btn.className = 'px-2.5 py-1 rounded-full text-xs font-extrabold transition bg-amber-400 text-slate-950 shadow-sm';
+      } else {
+        btn.className = 'px-2.5 py-1 rounded-full text-xs font-bold transition text-white/90 hover:text-white hover:bg-white/10';
+      }
+    }
+  });
+}
+
+// Chạm vào màn hình video để lấy nét (Tap to Focus)
+async function triggerScannerFocus(event) {
+  const video = document.getElementById('scannerVideo');
+  const ring = document.getElementById('scannerFocusRing');
+  if (!video || !ring) return;
+
+  const rect = video.getBoundingClientRect();
+  const clientX = event.clientX || (event.touches && event.touches[0]?.clientX);
+  const clientY = event.clientY || (event.touches && event.touches[0]?.clientY);
+
+  if (clientX === undefined || clientY === undefined) return;
+
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+
+  // Hiển thị vòng tròn lấy nét tại điểm chạm
+  ring.style.left = `${x}px`;
+  ring.style.top = `${y}px`;
+  ring.classList.remove('hidden');
+
+  // Áp dụng focusMode nếu trình duyệt/Android hỗ trợ
+  if (ScannerState.stream) {
+    const track = ScannerState.stream.getVideoTracks()[0];
+    if (track) {
+      try {
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+          await track.applyConstraints({
+            advanced: [{ focusMode: 'continuous' }]
+          });
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Tự động ẩn vòng lấy nét sau 800ms
+  setTimeout(() => {
+    if (ring) ring.classList.add('hidden');
+  }, 800);
 }
 
 // Chuyển đổi chế độ khung ngắm: Biển Vuông (Xe Tải/Ben/Moóc) hoặc Biển Dài (Xe Con/Bán Tải)
@@ -4450,10 +4562,10 @@ function setPlateScannerMode(mode) {
 
   if (ScannerState.plateMode === 'square') {
     if (btnSquare) {
-      btnSquare.className = 'flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold transition flex items-center justify-center gap-1 shadow-sm';
+      btnSquare.className = 'py-1 px-2.5 rounded-md bg-blue-600 text-white font-bold text-xs transition flex items-center gap-1 shadow-xs';
     }
     if (btnLong) {
-      btnLong.className = 'flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center justify-center gap-1';
+      btnLong.className = 'py-1 px-2.5 rounded-md text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center gap-1';
     }
     if (targetBox) {
       targetBox.style.maxWidth = '310px';
@@ -4463,10 +4575,10 @@ function setPlateScannerMode(mode) {
     if (longGuide) longGuide.classList.add('hidden');
   } else {
     if (btnSquare) {
-      btnSquare.className = 'flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 transition flex items-center justify-center gap-1';
+      btnSquare.className = 'py-1 px-2.5 rounded-md text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center gap-1';
     }
     if (btnLong) {
-      btnLong.className = 'flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold transition flex items-center justify-center gap-1 shadow-sm';
+      btnLong.className = 'py-1 px-2.5 rounded-md bg-blue-600 text-white font-bold text-xs transition flex items-center gap-1 shadow-xs';
     }
     if (targetBox) {
       targetBox.style.maxWidth = '340px';
@@ -4482,6 +4594,7 @@ function resetScannerView() {
   ScannerState.isScanning = false;
   ScannerState.recognizedPlate = null;
   ScannerState.capturedDataUrl = null;
+  setScannerZoom(1.0);
 
   const preview = document.getElementById('scannerCapturedPreview');
   if (preview) {
@@ -4505,6 +4618,74 @@ function resetScannerView() {
   if (controls) controls.classList.remove('hidden');
 }
 
+// Chụp ảnh bằng Máy Ảnh Gốc của Điện Thoại (Tận dụng cảm biến 48MP/50MP, chống rung OIS và Zoom quang học tele của máy)
+async function captureWithNativeDeviceCamera() {
+  const modal = document.getElementById('plateScannerModal');
+  const wasModalOpen = modal && !modal.classList.contains('hidden');
+  stopScannerCamera();
+
+  let photoDataUrl = null;
+
+  // 1. Thử dùng Capacitor Camera Plugin (nếu chạy trong Android Native App)
+  if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Camera) {
+    try {
+      showToast('Đang mở máy ảnh gốc của điện thoại...', 'info');
+      const { Camera } = window.Capacitor.Plugins;
+      const photo = await Camera.getPhoto({
+        quality: 100,
+        allowEditing: false,
+        resultType: 'dataUrl',
+        source: 'CAMERA'
+      });
+      if (photo && photo.dataUrl) {
+        photoDataUrl = photo.dataUrl;
+      }
+    } catch (err) {
+      console.warn('Lỗi gọi Capacitor Camera Plugin:', err.message);
+      if (err.message && (err.message.includes('User cancelled') || err.message.includes('cancelled'))) {
+        if (wasModalOpen) openPlateScannerModal();
+        return;
+      }
+    }
+  }
+
+  // 2. Fallback nếu không có Capacitor plugin hoặc chạy trên trình duyệt Web: Dùng input file capture="environment"
+  if (!photoDataUrl) {
+    photoDataUrl = await new Promise((resolve) => {
+      let input = document.getElementById('nativeCameraCaptureInput');
+      if (!input) {
+        input = document.createElement('input');
+        input.id = 'nativeCameraCaptureInput';
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.capture = 'environment';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+      }
+      input.onchange = (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) {
+          resolve(null);
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (ev) => resolve(ev.target.result);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+        input.value = '';
+      };
+      input.click();
+    });
+  }
+
+  if (photoDataUrl) {
+    if (modal) modal.classList.remove('hidden');
+    await processPlateRecognition(photoDataUrl, photoDataUrl);
+  } else if (wasModalOpen) {
+    await startScannerCamera();
+  }
+}
+
 // Bấm nút Chụp & Nhận Diện từ video camera - Cắt chuẩn xác theo khung viền scannerTargetBox
 async function captureAndRecognize() {
   if (ScannerState.isScanning) return;
@@ -4513,49 +4694,99 @@ async function captureAndRecognize() {
   const targetBox = document.getElementById('scannerTargetBox');
 
   if (!video || !video.videoWidth) {
-    document.getElementById('scannerFileInput')?.click();
+    await captureWithNativeDeviceCamera();
     return;
   }
 
-  // 1. Chụp toàn cảnh video
-  const fullCanvas = document.createElement('canvas');
-  fullCanvas.width = video.videoWidth;
-  fullCanvas.height = video.videoHeight;
-  const fullCtx = fullCanvas.getContext('2d');
-  fullCtx.drawImage(video, 0, 0, fullCanvas.width, fullCanvas.height);
-  const fullDataUrl = fullCanvas.toDataURL('image/jpeg', 0.88);
+  // 1. Thử lấy khung hình độ phân giải cảm biến cao nhất (ImageCapture grabFrame) nếu có
+  let fullDataUrl = null;
+  let sourceW = video.videoWidth;
+  let sourceH = video.videoHeight;
+  let stillBitmap = null;
 
-  // 2. Cắt chính xác vùng khung ngắm vàng scannerTargetBox trên video thực tế
+  if (ScannerState.stream && typeof window.ImageCapture !== 'undefined') {
+    const track = ScannerState.stream.getVideoTracks()[0];
+    if (track) {
+      try {
+        const capturer = new ImageCapture(track);
+        stillBitmap = await capturer.grabFrame();
+        if (stillBitmap && stillBitmap.width > 0) {
+          sourceW = stillBitmap.width;
+          sourceH = stillBitmap.height;
+          const sCanvas = document.createElement('canvas');
+          sCanvas.width = sourceW;
+          sCanvas.height = sourceH;
+          const sCtx = sCanvas.getContext('2d');
+          sCtx.drawImage(stillBitmap, 0, 0);
+          fullDataUrl = sCanvas.toDataURL('image/jpeg', 0.90);
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Fallback: Chụp từ video frame
+  if (!fullDataUrl) {
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = video.videoWidth;
+    fullCanvas.height = video.videoHeight;
+    const fullCtx = fullCanvas.getContext('2d');
+    fullCtx.drawImage(video, 0, 0, fullCanvas.width, fullCanvas.height);
+    fullDataUrl = fullCanvas.toDataURL('image/jpeg', 0.88);
+    sourceW = video.videoWidth;
+    sourceH = video.videoHeight;
+  }
+
+  // 2. Cắt chính xác vùng khung ngắm vàng scannerTargetBox trên video thực tế (tính toán bù trừ Zoom)
   let cropDataUrl = fullDataUrl;
   if (targetBox) {
-    const videoRect = video.getBoundingClientRect();
+    const container = video.parentElement;
+    const contRect = container ? container.getBoundingClientRect() : { width: video.clientWidth, height: video.clientHeight, left: 0, top: 0 };
     const boxRect = targetBox.getBoundingClientRect();
 
-    if (videoRect.width > 0 && videoRect.height > 0) {
-      const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
-      const renderedWidth = video.videoWidth * scale;
-      const renderedHeight = video.videoHeight * scale;
-      const offsetX = (renderedWidth - videoRect.width) / 2;
-      const offsetY = (renderedHeight - videoRect.height) / 2;
+    if (contRect.width > 0 && contRect.height > 0) {
+      const Z = ScannerState.zoomLevel || 1.0;
+      const scale = Math.max(contRect.width / sourceW, contRect.height / sourceH);
+      const renderedWidth = sourceW * scale;
+      const renderedHeight = sourceH * scale;
+      const offsetX = (renderedWidth - contRect.width) / 2;
+      const offsetY = (renderedHeight - contRect.height) / 2;
 
-      const boxLeft = (boxRect.left - videoRect.left) + offsetX;
-      const boxTop = (boxRect.top - videoRect.top) + offsetY;
+      // Tâm container và tâm khung ngắm trong tọa độ container
+      const contCenterX = contRect.width / 2;
+      const contCenterY = contRect.height / 2;
+      const boxCenterX = (boxRect.left - contRect.left) + boxRect.width / 2;
+      const boxCenterY = (boxRect.top - contRect.top) + boxRect.height / 2;
+
+      // Tính vị trí tâm trong không gian video trước khi scale
+      const deltaX = (boxCenterX - contCenterX) / Z;
+      const deltaY = (boxCenterY - contCenterY) / Z;
+      const unscaledCenterX = contCenterX + deltaX;
+      const unscaledCenterY = contCenterY + deltaY;
 
       // Thêm lề an toàn: 8% ngang và 10% dọc để không bị cắt lẹm chóp hoặc chân số (nhất là biển vuông 2 dòng)
       const padW = boxRect.width * 0.08;
       const padH = boxRect.height * 0.10;
+      const effW = (boxRect.width + 2 * padW) / Z;
+      const effH = (boxRect.height + 2 * padH) / Z;
 
-      const cropX = Math.max(0, Math.round((boxLeft - padW) / scale));
-      const cropY = Math.max(0, Math.round((boxTop - padH) / scale));
-      const cropW = Math.min(video.videoWidth - cropX, Math.round((boxRect.width + 2 * padW) / scale));
-      const cropH = Math.min(video.videoHeight - cropY, Math.round((boxRect.height + 2 * padH) / scale));
+      // Chuyển sang tọa độ cảm biến camera thực tế (sensor coordinates)
+      const sensorCenterX = (unscaledCenterX + offsetX) / scale;
+      const sensorCenterY = (unscaledCenterY + offsetY) / scale;
+      const cropW = Math.min(sourceW, Math.max(50, Math.round(effW / scale)));
+      const cropH = Math.min(sourceH, Math.max(30, Math.round(effH / scale)));
+      const cropX = Math.max(0, Math.min(sourceW - cropW, Math.round(sensorCenterX - cropW / 2)));
+      const cropY = Math.max(0, Math.min(sourceH - cropH, Math.round(sensorCenterY - cropH / 2)));
 
       if (cropW > 50 && cropH > 30) {
         const cropCanvas = document.createElement('canvas');
         cropCanvas.width = cropW;
         cropCanvas.height = cropH;
         const cropCtx = cropCanvas.getContext('2d');
-        cropCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        if (stillBitmap) {
+          cropCtx.drawImage(stillBitmap, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        } else {
+          cropCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        }
         cropDataUrl = cropCanvas.toDataURL('image/jpeg', 0.92);
       }
     }
@@ -4931,4 +5162,7 @@ window.closeQuickAiKeyModal = closeQuickAiKeyModal;
 window.toggleQuickKeyVisibility = toggleQuickKeyVisibility;
 window.saveQuickAiKey = saveQuickAiKey;
 window.checkScannerAiStatus = checkScannerAiStatus;
+window.setScannerZoom = setScannerZoom;
+window.triggerScannerFocus = triggerScannerFocus;
+window.captureWithNativeDeviceCamera = captureWithNativeDeviceCamera;
 

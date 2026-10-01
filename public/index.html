@@ -147,7 +147,7 @@
           <div>
             <h1 class="text-base sm:text-lg font-extrabold tracking-tight text-white leading-tight flex items-center gap-2">
               <span>FECON QUẢN LÝ VẬT TƯ</span>
-              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.7</span>
+              <span class="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">v1.3.9</span>
             </h1>
             <p class="text-[11px] sm:text-xs text-slate-400 font-medium">Kiểm Soát Nhập Xuất • Đa Dự Án • Khóa Sổ Ngày</p>
           </div>
@@ -269,13 +269,21 @@
                 <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Biển Số Xe / Số Hiệu Xe <span class="text-red-500">*</span>
                 </label>
-                <button type="button" onclick="openPlateScannerModal()" 
-                  class="px-2.5 py-1 text-xs font-bold rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white flex items-center gap-1.5 shadow-sm active:scale-95 transition"
-                  title="Chụp ảnh nhận diện biển số xe tự động (AI Cloud / OCR Offline)">
-                  <span>📷</span>
-                  <span>Quét Biển Số</span>
-                  <span class="text-[10px] bg-white/20 px-1 py-0.2 rounded font-semibold">AI</span>
-                </button>
+                <div class="flex items-center gap-1.5">
+                  <button type="button" onclick="captureWithNativeDeviceCamera()" 
+                    class="px-2 py-1 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white flex items-center gap-1 shadow-sm transition"
+                    title="Mở máy ảnh gốc của điện thoại (hỗ trợ ống kính Tele zoom quang học 2x-5x, cảm biến 48MP/50MP siêu nét)">
+                    <span>📸</span>
+                    <span>Camera Máy</span>
+                  </button>
+                  <button type="button" onclick="openPlateScannerModal()" 
+                    class="px-2 py-1 text-xs font-bold rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white flex items-center gap-1 shadow-sm active:scale-95 transition"
+                    title="Mở khung ngắm quét biển số trực tiếp trên màn hình">
+                    <span>📷</span>
+                    <span>Quét Trực Tiếp</span>
+                    <span class="text-[10px] bg-white/20 px-1 py-0.2 rounded font-semibold">AI</span>
+                  </button>
+                </div>
               </div>
               <div class="relative">
                 <input type="text" id="checkin_plate" required placeholder="VD: 29C-881.23, 29C-771.88..." 
@@ -2028,7 +2036,7 @@
 
   <!-- MODAL QUÉT BIỂN SỐ XE (HYBRID: AI VISION & OCR OFFLINE) -->
   <div id="plateScannerModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 hidden">
-    <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 flex flex-col max-h-[92vh]">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-xl sm:max-w-2xl w-full overflow-hidden border border-slate-200 flex flex-col max-h-[96vh]">
       <!-- Header -->
       <div class="bg-gradient-to-r from-blue-700 via-indigo-700 to-blue-800 text-white px-5 py-3.5 flex items-center justify-between shrink-0 shadow-md">
         <div class="flex items-center space-x-2.5">
@@ -2044,83 +2052,105 @@
       <!-- Body -->
       <div class="p-4 sm:p-5 overflow-y-auto space-y-4">
         
-        <!-- AI Engine Status Banner & Quick Key Config -->
-        <div id="scannerAiBanner" class="p-2.5 rounded-xl text-xs flex items-center justify-between transition-all bg-amber-50 border border-amber-200 text-amber-900">
-          <div class="flex items-center space-x-2">
-            <span id="scannerAiIcon" class="text-base">⚡</span>
-            <span id="scannerAiText" class="font-medium">Đang dùng <b>OCR Thiết Bị (Offline)</b>. Cài đặt Gemini AI để nhận diện chuẩn 99%.</span>
+        <!-- Thanh Điều Khiển Tinh Gọn Trên Camera: Chế độ Biển Số & Trạng Thái AI -->
+        <div class="flex flex-wrap items-center justify-between gap-2 p-1.5 bg-slate-100 rounded-xl border border-slate-200 text-xs">
+          <!-- Bộ chọn Loại Khung Ngắm Biển Số (Tối ưu riêng Biển Vuông 2 dòng và Biển Dài 1 dòng) -->
+          <div class="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shadow-xs">
+            <button type="button" id="btnPlateModeSquare" onclick="setPlateScannerMode('square')" 
+              class="py-1 px-2.5 rounded-md bg-blue-600 text-white font-bold text-xs transition flex items-center gap-1 shadow-xs" title="Xe tải ben, xe bồn, container, rơ moóc chở vật liệu">
+              <span>⬛</span>
+              <span>Biển Vuông</span>
+            </button>
+            <button type="button" id="btnPlateModeLong" onclick="setPlateScannerMode('long')" 
+              class="py-1 px-2.5 rounded-md text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center gap-1" title="Xe con, bán tải 1 hàng dài">
+              <span>▬</span>
+              <span>Biển Dài</span>
+            </button>
           </div>
-          <div class="flex items-center gap-1.5 shrink-0">
-            <button type="button" onclick="openPlateGuidelinesModal()" class="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-lg font-bold text-[11px] shadow-sm transition flex items-center gap-1" title="Xem quy chuẩn kích thước biển số và các ký hiệu riêng Bộ Công An">
+
+          <!-- Nút Quy Chuẩn & Trạng Thái AI -->
+          <div class="flex items-center gap-1.5">
+            <button type="button" onclick="openPlateGuidelinesModal()" class="px-2 py-1 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-lg font-bold text-[11px] shadow-xs transition flex items-center gap-1" title="Xem quy chuẩn kích thước và 10 ký hiệu riêng">
               <span>📋</span>
               <span class="hidden xs:inline">Quy Chuẩn</span>
             </button>
-            <button type="button" onclick="openQuickAiKeyModal()" id="scannerAiKeyBtn" class="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg font-bold text-[11px] shadow-sm transition">
-              🔑 Cài Key AI
+            <button type="button" onclick="openQuickAiKeyModal()" id="scannerAiKeyBtn" class="px-2 py-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg font-bold text-[11px] shadow-xs transition flex items-center gap-1">
+              <span id="scannerAiIcon">⚡</span>
+              <span id="scannerAiKeyText" class="hidden xs:inline">Cài Key AI</span>
             </button>
           </div>
         </div>
 
-        <!-- Bộ chọn Loại Khung Ngắm Biển Số (Tối ưu riêng Biển Vuông 2 dòng và Biển Dài 1 dòng) -->
-        <div class="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
-          <button type="button" id="btnPlateModeSquare" onclick="setPlateScannerMode('square')" 
-            class="flex-1 py-1.5 px-2 rounded-lg bg-blue-600 text-white font-bold text-xs transition flex items-center justify-center gap-1.5 shadow-sm">
-            <span class="text-sm">⬛</span>
-            <span>Biển Vuông (Xe Tải / Ben / Moóc)</span>
-          </button>
-          <button type="button" id="btnPlateModeLong" onclick="setPlateScannerMode('long')" 
-            class="flex-1 py-1.5 px-2 rounded-lg text-slate-600 hover:text-slate-900 font-semibold text-xs transition flex items-center justify-center gap-1.5">
-            <span class="text-sm">▬</span>
-            <span>Biển Dài (Xe Con / Bán Tải)</span>
-          </button>
-        </div>
-
-        <!-- Live Camera Viewfinder & File Fallback -->
-        <div class="relative bg-slate-900 rounded-2xl overflow-hidden shadow-inner border border-slate-700 flex flex-col items-center justify-center min-h-[260px]">
-          <!-- Video element -->
-          <video id="scannerVideo" autoplay playsinline muted class="w-full h-64 sm:h-72 object-cover"></video>
+        <!-- Live Camera Viewfinder (KÍCH THƯỚC LỚN, CÓ ZOOM & CHẠM LẤY NÉT) -->
+        <div class="relative bg-slate-950 rounded-2xl overflow-hidden shadow-2xl border border-slate-700 flex flex-col items-center justify-center min-h-[360px] xs:min-h-[420px] sm:min-h-[480px]">
+          <!-- Video element to, rộng, mượt mà -->
+          <video id="scannerVideo" autoplay playsinline muted onclick="triggerScannerFocus(event)" 
+            class="w-full h-[360px] xs:h-[420px] sm:h-[480px] md:h-[500px] object-cover transition-transform duration-150 cursor-crosshair select-none"></video>
           
-          <!-- Viewfinder Frame Overlay (Tự động thích ứng Biển Vuông hoặc Biển Dài) -->
-          <div id="scannerTargetBox" class="absolute inset-x-4 top-1/2 -translate-y-1/2 max-w-[310px] mx-auto h-[175px] border-2 border-amber-400/95 rounded-xl pointer-events-none flex flex-col items-center justify-between p-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] transition-all duration-300">
-            <!-- 4 góc định vị nhận diện sắc nét -->
+          <!-- Vòng tròn hiệu ứng Chạm Lấy Nét (Tap to focus indicator) -->
+          <div id="scannerFocusRing" class="absolute w-14 h-14 -translate-x-1/2 -translate-y-1/2 border-2 border-amber-400 rounded-xl pointer-events-none transition-all duration-300 hidden z-20 flex items-center justify-center shadow-[0_0_12px_rgba(251,191,36,0.8)]">
+            <div class="w-1.5 h-1.5 bg-amber-400 rounded-full animate-ping"></div>
+          </div>
+
+          <!-- Viewfinder Frame Overlay (TỐI GIẢN - TRONG SUỐT 100% - KHÔNG CÓ CHỮ CHE KHUẤT) -->
+          <div id="scannerTargetBox" class="absolute inset-x-4 top-1/2 -translate-y-1/2 max-w-[310px] mx-auto h-[175px] border border-amber-400/60 rounded-xl pointer-events-none flex flex-col items-center justify-between p-1.5 shadow-[0_0_0_9999px_rgba(0,0,0,0.50)] transition-all duration-300">
+            <!-- 4 góc định vị nhận diện sắc nét nổi bật -->
             <div class="w-full flex justify-between items-center pointer-events-none">
-              <span class="border-t-2 border-l-2 border-amber-400 w-4 h-4 rounded-tl"></span>
-              <div class="text-[10px] font-bold text-amber-300 bg-slate-900/90 px-2 py-0.5 rounded-full border border-amber-400/40 shadow-sm flex items-center gap-1">
-                <span>🎯</span>
-                <span>CĂN VỪA BIỂN SỐ VÀO KHUNG</span>
-              </div>
-              <span class="border-t-2 border-r-2 border-amber-400 w-4 h-4 rounded-tr"></span>
+              <span class="border-t-3 border-l-3 border-amber-400 w-5 h-5 rounded-tl"></span>
+              <span class="border-t-3 border-r-3 border-amber-400 w-5 h-5 rounded-tr"></span>
             </div>
 
-            <!-- Vạch chỉ dẫn biển vuông 2 dòng (Bộ Công An) -->
-            <div id="scannerSquareGuide" class="w-full flex flex-col items-center justify-center pointer-events-none space-y-1 py-1">
-              <div class="w-full flex items-center justify-center gap-1 text-[10px] text-amber-200/95 font-mono bg-slate-900/60 rounded px-1">
-                <span>Dòng 1:</span>
-                <span class="font-bold text-white">Mã tỉnh & Sê-ri</span>
-                <span class="text-amber-300 text-[9px]">(VD: 30F, 29KT, 51D)</span>
-              </div>
-              <div class="w-full border-t border-dashed border-amber-400/50 my-0.5"></div>
-              <div class="w-full flex items-center justify-center gap-1 text-[10px] text-amber-200/95 font-mono bg-slate-900/60 rounded px-1">
-                <span>Dòng 2:</span>
-                <span class="font-bold text-white">Dãy 5 số</span>
-                <span class="text-amber-300 text-[9px]">(VD: 256.58, 113.97)</span>
-              </div>
+            <!-- Vạch phân tách mờ ở giữa cho biển vuông 2 dòng (Hoàn toàn không có chữ đè lên) -->
+            <div id="scannerSquareGuide" class="w-full flex items-center justify-center pointer-events-none py-1">
+              <div class="w-full border-t border-dashed border-amber-400/40"></div>
             </div>
 
-            <!-- Vạch chỉ dẫn biển dài 1 dòng -->
-            <div id="scannerLongGuide" class="hidden w-full flex items-center justify-center pointer-events-none">
-              <span class="text-[11px] font-mono font-bold text-amber-200 bg-slate-900/70 px-2 py-0.5 rounded">xxA-xxx.xx hoặc xxA-xxxx</span>
-            </div>
+            <!-- Vạch phân tách cho biển dài (ẩn) -->
+            <div id="scannerLongGuide" class="hidden w-full pointer-events-none"></div>
 
-            <div class="w-full flex justify-between items-center text-[10px] text-slate-300 px-1 font-mono pointer-events-none">
-              <span class="border-b-2 border-l-2 border-amber-400 w-4 h-4 rounded-bl"></span>
-              <span class="text-[9px] text-amber-300/90 font-medium">Quy chuẩn Bộ Công An</span>
-              <span class="border-b-2 border-r-2 border-amber-400 w-4 h-4 rounded-br"></span>
+            <div class="w-full flex justify-between items-center pointer-events-none">
+              <span class="border-b-3 border-l-3 border-amber-400 w-5 h-5 rounded-bl"></span>
+              <span class="border-b-3 border-r-3 border-amber-400 w-5 h-5 rounded-br"></span>
             </div>
           </div>
 
+          <!-- CỤM ĐIỀU KHIỂN ZOOM CAMERA NỔI TRỰC TIẾP TRÊN MẶT VIDEO -->
+          <div class="absolute bottom-3 inset-x-3 flex items-center justify-between z-10 pointer-events-auto">
+            <!-- Nút giảm zoom -->
+            <button type="button" onclick="setScannerZoom(-0.5, true)" title="Thu nhỏ zoom"
+              class="w-9 h-9 rounded-full bg-slate-900/80 hover:bg-slate-900 active:scale-95 text-white border border-white/20 flex items-center justify-center font-bold text-base backdrop-blur-md shadow-md transition">
+              −
+            </button>
+
+            <!-- Cụm chọn nhanh Zoom (1x, 1.5x, 2x, 3x) -->
+            <div class="flex items-center gap-1 bg-slate-900/85 backdrop-blur-md p-1 rounded-full border border-white/20 shadow-lg">
+              <button type="button" id="btnZoom1x" onclick="setScannerZoom(1.0)" 
+                class="px-2.5 py-1 rounded-full text-xs font-extrabold transition bg-amber-400 text-slate-950 shadow-sm">
+                1x
+              </button>
+              <button type="button" id="btnZoom15x" onclick="setScannerZoom(1.5)" 
+                class="px-2.5 py-1 rounded-full text-xs font-bold transition text-white/90 hover:text-white hover:bg-white/10">
+                1.5x
+              </button>
+              <button type="button" id="btnZoom2x" onclick="setScannerZoom(2.0)" 
+                class="px-2.5 py-1 rounded-full text-xs font-bold transition text-white/90 hover:text-white hover:bg-white/10">
+                2x
+              </button>
+              <button type="button" id="btnZoom3x" onclick="setScannerZoom(3.0)" 
+                class="px-2.5 py-1 rounded-full text-xs font-bold transition text-white/90 hover:text-white hover:bg-white/10">
+                3x
+              </button>
+            </div>
+
+            <!-- Nút tăng zoom -->
+            <button type="button" onclick="setScannerZoom(0.5, true)" title="Phóng to zoom"
+              class="w-9 h-9 rounded-full bg-slate-900/80 hover:bg-slate-900 active:scale-95 text-white border border-white/20 flex items-center justify-center font-bold text-base backdrop-blur-md shadow-md transition">
+              +
+            </button>
+          </div>
+
           <!-- Preview ảnh đã chụp nếu đang xem xét -->
-          <img id="scannerCapturedPreview" src="" class="absolute inset-0 w-full h-full object-contain bg-black hidden z-10" alt="Captured plate">
+          <img id="scannerCapturedPreview" src="" class="absolute inset-0 w-full h-full object-contain bg-black hidden z-15" alt="Captured plate">
 
           <!-- Scanning Overlay / Loading State -->
           <div id="scannerLoadingOverlay" class="absolute inset-0 bg-slate-950/85 z-20 flex flex-col items-center justify-center p-4 text-center hidden">
@@ -2142,23 +2172,40 @@
         </div>
 
         <!-- Camera Controls -->
-        <div id="scannerControlsRow" class="flex items-center gap-2">
-          <button type="button" onclick="captureAndRecognize()" 
-            class="flex-1 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 active:scale-[0.98] text-white font-bold text-sm rounded-xl shadow-lg flex items-center justify-center gap-2 transition">
-            <span class="text-lg">📸</span>
-            <span>Chụp & Nhận Diện</span>
-          </button>
-          
-          <button type="button" onclick="switchCameraFacing()" title="Đổi camera trước / sau"
-            class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
-            <span>🔄</span>
-          </button>
+        <div id="scannerControlsRow" class="space-y-2">
+          <!-- Gợi ý giải pháp Zoom nét khi xe ở xa -->
+          <div class="flex items-center justify-between px-3 py-1.5 bg-amber-50 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 shadow-xs">
+            <span>💡 <i>Xe ở xa 3–5m? Hãy chụp bằng <b>Camera Máy</b> để dùng Zoom quang tele cực nét!</i></span>
+            <button type="button" onclick="captureWithNativeDeviceCamera()" class="font-extrabold text-emerald-700 hover:text-emerald-800 underline ml-2 shrink-0">Chụp ngay</button>
+          </div>
 
-          <button type="button" onclick="document.getElementById('scannerFileInput').click()" title="Mở máy ảnh ngoài hoặc chọn file ảnh từ máy"
-            class="px-3.5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 flex items-center gap-1.5 transition">
-            <span>📁</span>
-            <span class="hidden sm:inline">Tải / Chụp Ảnh</span>
-          </button>
+          <div class="flex items-center gap-2">
+            <!-- Nút 1: Chụp bằng camera live stream -->
+            <button type="button" onclick="captureAndRecognize()" 
+              class="flex-1 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 active:scale-[0.98] text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition">
+              <span class="text-base sm:text-lg">📸</span>
+              <span>Chụp Live</span>
+            </button>
+
+            <!-- Nút 2: Chụp bằng Camera Gốc của điện thoại (Tele optical zoom / 50MP / OIS) -->
+            <button type="button" onclick="captureWithNativeDeviceCamera()" title="Mở máy ảnh gốc của điện thoại để dùng Zoom quang học và cảm biến 50MP nét cao"
+              class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition">
+              <span class="text-base sm:text-lg">📷</span>
+              <span>Camera Máy (Nét Cao)</span>
+            </button>
+            
+            <!-- Nút 3: Đổi camera trước / sau -->
+            <button type="button" onclick="switchCameraFacing()" title="Đổi camera trước / sau"
+              class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
+              <span>🔄</span>
+            </button>
+
+            <!-- Nút 4: Chọn file ảnh có sẵn -->
+            <button type="button" onclick="document.getElementById('scannerFileInput').click()" title="Chọn tệp ảnh từ máy"
+              class="p-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl border border-slate-200 transition">
+              <span>📁</span>
+            </button>
+          </div>
         </div>
 
         <!-- Result Card (Appears after successful scan) -->
