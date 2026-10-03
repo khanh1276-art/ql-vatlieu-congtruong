@@ -597,6 +597,7 @@ function switchTab(tabId) {
   } else if (tabId === 'daily') {
     loadDailyReport();
   } else if (tabId === 'cumulative') {
+    populateCumulativeVehicleDropdown();
     loadCumulativeReport();
   } else if (tabId === 'users') {
     loadUsers();
@@ -673,9 +674,25 @@ async function loadVehicles() {
   try {
     const res = await apiFetch('/api/vehicles');
     AppState.vehicles = await res.json();
+    populateCumulativeVehicleDropdown();
   } catch (err) {
     console.error('Lỗi tải danh mục xe:', err);
   }
+}
+
+function populateCumulativeVehicleDropdown() {
+  const plateSel = document.getElementById('cumPlateFilter');
+  if (!plateSel) return;
+  const cur = plateSel.value;
+  const list = (AppState.vehicles || []).slice().sort((a, b) => (a.plate_number || '').localeCompare(b.plate_number || ''));
+  let html = '<option value="">-- Tất cả các xe --</option>';
+  for (const v of list) {
+    if (!v.plate_number) continue;
+    const suppText = v.supplier_name ? ` (${escapeHtml(v.supplier_name)})` : '';
+    html += `<option value="${escapeHtml(v.plate_number)}">${escapeHtml(v.plate_number)}${suppText}</option>`;
+  }
+  plateSel.innerHTML = html;
+  if (cur) plateSel.value = cur;
 }
 
 // ============================================================================
@@ -1649,18 +1666,50 @@ function handleCumulativeFilterChange() {
   loadCumulativeReport();
 }
 
+function setCumPreset(preset) {
+  const startInput = document.getElementById('cumStartDate');
+  const endInput = document.getElementById('cumEndDate');
+  const singleDateInput = document.getElementById('cumSingleDate');
+  const today = getTodayDateStr();
+
+  if (singleDateInput) singleDateInput.value = '';
+
+  if (preset === 'thisMonth') {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    if (startInput) startInput.value = `${yyyy}-${mm}-01`;
+    if (endInput) endInput.value = today;
+  } else if (preset === 'last30Days') {
+    const d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    if (startInput) startInput.value = `${yyyy}-${mm}-${dd}`;
+    if (endInput) endInput.value = today;
+  } else if (preset === 'all') {
+    if (startInput) startInput.value = '2025-10-01';
+    if (endInput) endInput.value = today;
+  }
+  loadCumulativeReport();
+}
+
 async function loadCumulativeReport() {
   const startDate = document.getElementById('cumStartDate')?.value || getTodayDateStr();
   const endDate = document.getElementById('cumEndDate')?.value || getTodayDateStr();
+  const singleDate = document.getElementById('cumSingleDate')?.value || '';
+  const plateNumber = document.getElementById('cumPlateFilter')?.value || '';
   const projSel = document.getElementById('cumProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
   const supplierId = document.getElementById('cumSupplierFilter')?.value || '';
   const materialId = document.getElementById('cumMaterialFilter')?.value || '';
 
   let url = `/api/reports/cumulative?startDate=${startDate}&endDate=${endDate}`;
-  if (projectId) url += `&projectId=${projectId}`;
-  if (supplierId) url += `&supplierId=${supplierId}`;
-  if (materialId) url += `&materialId=${materialId}`;
+  if (singleDate) url += `&singleDate=${encodeURIComponent(singleDate)}`;
+  if (plateNumber) url += `&plateNumber=${encodeURIComponent(plateNumber)}`;
+  if (projectId) url += `&projectId=${encodeURIComponent(projectId)}`;
+  if (supplierId) url += `&supplierId=${encodeURIComponent(supplierId)}`;
+  if (materialId) url += `&materialId=${encodeURIComponent(materialId)}`;
 
   try {
     const res = await apiFetch(url);
@@ -1743,6 +1792,34 @@ async function loadCumulativeReport() {
       }
     }
 
+    // Bảng 4: Thống kê sản lượng theo từng phương tiện (Biển số xe)
+    const vehTbody = document.getElementById('cumVehicleTableBody');
+    const vehCountEl = document.getElementById('cumVehicleTableCount');
+    const vehiclesList = data.byVehicle || [];
+    if (vehCountEl) {
+      vehCountEl.textContent = `${vehiclesList.length} xe`;
+    }
+    if (vehTbody) {
+      if (vehiclesList.length === 0) {
+        vehTbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-slate-400">Không có dữ liệu phương tiện trong giai đoạn</td></tr>`;
+      } else {
+        vehTbody.innerHTML = vehiclesList.map((v, idx) => `
+          <tr class="hover:bg-slate-50 transition">
+            <td class="px-4 py-3 text-center font-mono text-slate-500">${idx + 1}</td>
+            <td class="px-4 py-3 font-mono font-bold text-blue-900">${escapeHtml(v.plate_number)}</td>
+            <td class="px-4 py-3 font-medium text-slate-800">${escapeHtml(v.supplier_name || '-')}</td>
+            <td class="px-4 py-3 text-slate-600">${escapeHtml(v.project_name || '-')}</td>
+            <td class="px-4 py-3 text-slate-700">${escapeHtml(v.material_name || '-')}</td>
+            <td class="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/40">${escapeHtml(v.unit || 'm³')}</td>
+            <td class="px-4 py-3 text-center font-mono text-slate-600">${v.active_days || 1}</td>
+            <td class="px-4 py-3 text-center font-mono font-semibold text-slate-900">${v.trips}</td>
+            <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${Number(v.volume).toFixed(2)} ${escapeHtml(v.unit || 'm³')}</td>
+            <td class="px-4 py-3 text-right font-mono text-slate-600">${Number(v.avg_volume).toFixed(2)}</td>
+          </tr>
+        `).join('');
+      }
+    }
+
   } catch (err) {
     console.error('Lỗi tải báo cáo lũy kế:', err);
     showToast('Lỗi khi tải dữ liệu báo cáo lũy kế', 'error');
@@ -1752,12 +1829,18 @@ async function loadCumulativeReport() {
 function exportCumulativeExcel() {
   const startDate = document.getElementById('cumStartDate')?.value || getTodayDateStr();
   const endDate = document.getElementById('cumEndDate')?.value || getTodayDateStr();
+  const singleDate = document.getElementById('cumSingleDate')?.value || '';
+  const plateNumber = document.getElementById('cumPlateFilter')?.value || '';
+  const view = document.getElementById('cumExportView')?.value || 'all';
   const projSel = document.getElementById('cumProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
   const supplierId = document.getElementById('cumSupplierFilter')?.value || '';
   const materialId = document.getElementById('cumMaterialFilter')?.value || '';
 
   let url = `/api/reports/export-excel?type=cumulative&startDate=${startDate}&endDate=${endDate}`;
+  if (singleDate) url += `&singleDate=${encodeURIComponent(singleDate)}`;
+  if (plateNumber) url += `&plateNumber=${encodeURIComponent(plateNumber)}`;
+  if (view) url += `&view=${encodeURIComponent(view)}`;
   if (projectId) url += `&projectId=${encodeURIComponent(projectId)}`;
   if (supplierId) url += `&supplierId=${encodeURIComponent(supplierId)}`;
   if (materialId) url += `&materialId=${encodeURIComponent(materialId)}`;
@@ -3136,6 +3219,9 @@ window.saveEditTicket = saveEditTicket;
 window.printDailyReport = printDailyReport;
 window.exportDailyExcel = exportDailyExcel;
 window.handleCumulativeFilterChange = handleCumulativeFilterChange;
+window.loadCumulativeReport = loadCumulativeReport;
+window.setCumPreset = setCumPreset;
+window.populateCumulativeVehicleDropdown = populateCumulativeVehicleDropdown;
 window.exportCumulativeExcel = exportCumulativeExcel;
 window.fetchAndShowTicket = fetchAndShowTicket;
 window.closeTicketModal = closeTicketModal;

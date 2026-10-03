@@ -2022,6 +2022,8 @@ const server = http.createServer(async (req, res) => {
       const currentUser = getAuthenticatedUser(req);
       const startDate = url.searchParams.get('startDate') || getLocalDateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
       const endDate = url.searchParams.get('endDate') || getLocalDateString();
+      const singleDate = url.searchParams.get('singleDate');
+      const plateNumber = url.searchParams.get('plateNumber');
       let projectId = url.searchParams.get('projectId');
       const supplierId = url.searchParams.get('supplierId');
       const materialId = url.searchParams.get('materialId');
@@ -2030,8 +2032,16 @@ const server = http.createServer(async (req, res) => {
         projectId = currentUser.project_id;
       }
 
-      let filterSql = ` AND date(time_in) >= date(?) AND date(time_in) <= date(?) AND status != 'CANCELLED'`;
-      const baseParams = [startDate, endDate];
+      let filterSql = ` AND status != 'CANCELLED'`;
+      const baseParams = [];
+
+      if (singleDate) {
+        filterSql += ` AND date(time_in) = date(?)`;
+        baseParams.push(singleDate);
+      } else {
+        filterSql += ` AND date(time_in) >= date(?) AND date(time_in) <= date(?)`;
+        baseParams.push(startDate, endDate);
+      }
 
       if (projectId) {
         filterSql += ' AND project_id = ?';
@@ -2042,8 +2052,18 @@ const server = http.createServer(async (req, res) => {
         baseParams.push(parseInt(supplierId, 10));
       }
       if (materialId) {
-        filterSql += ' AND material_id = ?';
-        baseParams.push(parseInt(materialId, 10));
+        if (/^\d+$/.test(String(materialId).trim())) {
+          filterSql += ' AND material_id = ?';
+          baseParams.push(parseInt(materialId, 10));
+        } else {
+          filterSql += ' AND material_name = ?';
+          baseParams.push(String(materialId).trim());
+        }
+      }
+      if (plateNumber && plateNumber.trim()) {
+        const cleanPlate = plateNumber.trim().replace(/[\s.-]/g, '').toUpperCase();
+        filterSql += ` AND REPLACE(REPLACE(REPLACE(UPPER(plate_number), ' ', ''), '.', ''), '-', '') = ?`;
+        baseParams.push(cleanPlate);
       }
 
       const totalSummary = db.prepare(`
@@ -2127,19 +2147,22 @@ const server = http.createServer(async (req, res) => {
           project_name,
           material_name,
           unit,
+          COUNT(DISTINCT date(time_in)) as active_days,
           COUNT(*) as trips,
           ROUND(SUM(actual_volume), 2) as volume,
           ROUND(AVG(actual_volume), 2) as avg_volume,
           standard_volume
         FROM tickets
         WHERE 1=1 ${filterSql}
-        GROUP BY plate_number, material_name, unit
-        ORDER BY trips DESC
+        GROUP BY plate_number, material_name, unit, supplier_name, project_name
+        ORDER BY trips DESC, volume DESC
       `).all(...baseParams);
 
       return sendJson(res, 200, {
         startDate,
         endDate,
+        singleDate,
+        plateNumber,
         summary: totalSummary,
         byMaterial,
         byProject,
@@ -2155,6 +2178,9 @@ const server = http.createServer(async (req, res) => {
       const date = url.searchParams.get('date') || getLocalDateString();
       const startDate = url.searchParams.get('startDate') || date;
       const endDate = url.searchParams.get('endDate') || date;
+      const singleDate = url.searchParams.get('singleDate');
+      const plateNumber = url.searchParams.get('plateNumber');
+      const view = url.searchParams.get('view') || 'all';
       let projectId = url.searchParams.get('projectId');
       const supplierId = url.searchParams.get('supplierId');
       const materialId = url.searchParams.get('materialId');
@@ -2187,7 +2213,16 @@ const server = http.createServer(async (req, res) => {
         if (slug) matSuffix = `_${slug}`;
       }
 
-      let filename = `Bao_Cao_${type === 'daily' ? `Ngay_${date}` : `Luy_Ke_${startDate}_den_${endDate}`}${matSuffix}.xls`;
+      let datePart = singleDate ? `Ngay_${singleDate}` : `Luy_Ke_${startDate}_den_${endDate}`;
+      if (type === 'daily') datePart = `Ngay_${date}`;
+
+      let vehSuffix = '';
+      if (plateNumber && plateNumber.trim()) {
+        const clean = plateNumber.trim().replace(/[\s.-]/g, '');
+        vehSuffix = `_Xe_${clean}`;
+      }
+
+      let filename = `Bao_Cao_${datePart}${vehSuffix}${matSuffix}.xls`;
       let xmlContent = '';
 
       if (type === 'daily') {
@@ -2216,8 +2251,17 @@ const server = http.createServer(async (req, res) => {
 
         xmlContent = buildDailyExcelXml(date, summary, tickets, { matInfo, suppInfo });
       } else {
-        let filterSql = `date(time_in) >= date(?) AND date(time_in) <= date(?) AND status != 'CANCELLED'`;
-        const params = [startDate, endDate];
+        let filterSql = `status != 'CANCELLED'`;
+        const params = [];
+
+        if (singleDate) {
+          filterSql += ` AND date(time_in) = date(?)`;
+          params.push(singleDate);
+        } else {
+          filterSql += ` AND date(time_in) >= date(?) AND date(time_in) <= date(?)`;
+          params.push(startDate, endDate);
+        }
+
         if (projectId) {
           filterSql += ` AND project_id = ?`;
           params.push(parseInt(projectId, 10));
@@ -2235,25 +2279,84 @@ const server = http.createServer(async (req, res) => {
             params.push(String(materialId).trim());
           }
         }
+        if (plateNumber && plateNumber.trim()) {
+          const cleanPlate = plateNumber.trim().replace(/[\s.-]/g, '').toUpperCase();
+          filterSql += ` AND REPLACE(REPLACE(REPLACE(UPPER(plate_number), ' ', ''), '.', ''), '-', '') = ?`;
+          params.push(cleanPlate);
+        }
 
-        const cumulativeData = db.prepare(`
+        const summary = db.prepare(`
+          SELECT 
+            COUNT(*) as trips, 
+            ROUND(SUM(actual_volume), 2) as total_volume,
+            COUNT(DISTINCT plate_number) as vehicle_count,
+            COUNT(DISTINCT date(time_in)) as active_days
+          FROM tickets 
+          WHERE ${filterSql}
+        `).get(...params);
+
+        const dailyVehicleBreakdown = db.prepare(`
+          SELECT 
+            date(time_in) as work_date,
+            plate_number,
+            project_name,
+            supplier_name,
+            material_name,
+            unit,
+            COUNT(*) as trips,
+            ROUND(SUM(actual_volume), 2) as volume,
+            ROUND(AVG(actual_volume), 2) as avg_volume
+          FROM tickets
+          WHERE ${filterSql}
+          GROUP BY date(time_in), plate_number, material_name, unit, supplier_name, project_name
+          ORDER BY work_date DESC, trips DESC, plate_number ASC
+        `).all(...params);
+
+        const vehicleSummary = db.prepare(`
+          SELECT 
+            plate_number,
+            supplier_name,
+            project_name,
+            material_name,
+            unit,
+            COUNT(DISTINCT date(time_in)) as active_days,
+            COUNT(*) as trips,
+            ROUND(SUM(actual_volume), 2) as volume,
+            ROUND(AVG(actual_volume), 2) as avg_volume
+          FROM tickets
+          WHERE ${filterSql}
+          GROUP BY plate_number, material_name, unit, supplier_name, project_name
+          ORDER BY trips DESC, volume DESC
+        `).all(...params);
+
+        const materialSummary = db.prepare(`
           SELECT 
             project_name,
             supplier_name,
             material_name,
             unit,
-            plate_number,
+            COUNT(DISTINCT plate_number) as vehicle_count,
             COUNT(*) as trips,
             ROUND(SUM(actual_volume), 2) as volume
           FROM tickets
           WHERE ${filterSql}
-          GROUP BY project_name, supplier_name, material_name, unit, plate_number
+          GROUP BY project_name, supplier_name, material_name, unit
           ORDER BY project_name ASC, supplier_name ASC, volume DESC
         `).all(...params);
 
-        const summary = db.prepare(`SELECT COUNT(*) as trips, ROUND(SUM(actual_volume), 2) as total_volume FROM tickets WHERE ${filterSql}`).get(...params);
-
-        xmlContent = buildCumulativeExcelXml(startDate, endDate, summary, cumulativeData, { matInfo, suppInfo });
+        xmlContent = buildCumulativeExcelXml({
+          startDate,
+          endDate,
+          singleDate,
+          plateNumber,
+          view,
+          summary,
+          dailyVehicleBreakdown,
+          vehicleSummary,
+          materialSummary,
+          matInfo,
+          suppInfo
+        });
       }
 
       res.writeHead(200, {
@@ -2862,67 +2965,64 @@ function buildDailyExcelTemplateXml() {
 </Workbook>`;
 }
 
-function buildCumulativeExcelXml(startDate, endDate, summary, data, extraInfo = {}) {
-  let rows = '';
-  let index = 1;
-  let totalTrips = 0;
-  let totalVol = 0;
-
-  for (const item of data) {
-    const v = Number(item.volume) || 0;
-    const trips = Number(item.trips) || 0;
-    totalTrips += trips;
-    totalVol += v;
-
-    rows += `
-    <Row>
-      <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${index++}</Data></Cell>
-      <Cell><Data ss:Type="String">${escapeXml(item.project_name || 'Công trường')}</Data></Cell>
-      <Cell ss:StyleID="cBold"><Data ss:Type="String">${escapeXml(item.supplier_name)}</Data></Cell>
-      <Cell><Data ss:Type="String">${escapeXml(item.material_name)}</Data></Cell>
-      <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.unit || 'm³')}</Data></Cell>
-      <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.plate_number)}</Data></Cell>
-      <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${trips}</Data></Cell>
-      <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${v}</Data></Cell>
-    </Row>`;
+function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataArg, extraInfoArg) {
+  let opts = {};
+  if (typeof optsOrStartDate === 'object' && optsOrStartDate !== null && !Array.isArray(optsOrStartDate)) {
+    opts = optsOrStartDate;
+  } else {
+    opts = {
+      startDate: optsOrStartDate,
+      endDate: endDateArg,
+      summary: summaryArg,
+      dailyVehicleBreakdown: dataArg,
+      vehicleSummary: dataArg,
+      materialSummary: dataArg,
+      matInfo: extraInfoArg?.matInfo,
+      suppInfo: extraInfoArg?.suppInfo
+    };
   }
 
-  const finalTrips = (summary && summary.trips !== undefined) ? summary.trips : totalTrips;
-  const finalVol = (summary && summary.total_volume !== undefined) ? summary.total_volume : Math.round(totalVol * 100) / 100;
-  const matText = (extraInfo && extraInfo.matInfo) ? extraInfo.matInfo.name : '';
-  const suppText = (extraInfo && extraInfo.suppInfo) ? extraInfo.suppInfo.name : '';
+  const {
+    startDate = '',
+    endDate = '',
+    singleDate = '',
+    plateNumber = '',
+    view = 'all',
+    summary = {},
+    dailyVehicleBreakdown = [],
+    vehicleSummary = [],
+    materialSummary = [],
+    matInfo = null,
+    suppInfo = null
+  } = opts;
 
-  let filterText = `Giai đoạn: Từ ${startDate} đến ${endDate}`;
-  if (matText) filterText += ` | Loại vật tư: ${matText}`;
-  if (suppText) filterText += ` | Nhà cung cấp: ${suppText}`;
-  filterText += ` | Tổng lượt xe: ${finalTrips} lượt | Tổng khối lượng: ${finalVol.toFixed(2)}`;
+  let filterText = singleDate ? `Ngày: ${singleDate}` : `Giai đoạn: Từ ${startDate} đến ${endDate}`;
+  if (plateNumber) filterText += ` | Biển số xe: ${plateNumber}`;
+  if (matInfo && matInfo.name) filterText += ` | Loại vật tư: ${matInfo.name}`;
+  if (suppInfo && suppInfo.name) filterText += ` | Nhà cung cấp: ${suppInfo.name}`;
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
-  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
-  <Styles>
+  const styles = `
     <Style ss:ID="Default" ss:Name="Normal">
       <Alignment ss:Vertical="Center"/>
       <Font ss:FontName="Segoe UI" ss:Size="11"/>
     </Style>
     <Style ss:ID="Title">
       <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-      <Font ss:FontName="Segoe UI" ss:Size="16" ss:Bold="1" ss:Color="#0f172a"/>
+      <Font ss:FontName="Segoe UI" ss:Size="15" ss:Bold="1" ss:Color="#0f172a"/>
     </Style>
     <Style ss:ID="SubTitle">
       <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Italic="1" ss:Color="#475569"/>
+      <Font ss:FontName="Segoe UI" ss:Size="10" ss:Italic="1" ss:Color="#475569"/>
     </Style>
     <Style ss:ID="Header">
-      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>
       <Borders>
         <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
         <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
         <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
         <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#cbd5e1"/>
       </Borders>
-      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#ffffff"/>
+      <Font ss:FontName="Segoe UI" ss:Size="10" ss:Bold="1" ss:Color="#ffffff"/>
       <Interior ss:Color="#047857" ss:Pattern="Solid"/>
     </Style>
     <Style ss:ID="TotalRow">
@@ -2941,6 +3041,7 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data, extraInfo = 
         <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#047857"/>
       </Borders>
       <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#065f46"/>
+      <NumberFormat ss:Format="#,##0"/>
       <Interior ss:Color="#d1fae5" ss:Pattern="Solid"/>
     </Style>
     <Style ss:ID="TotalRowNumber">
@@ -2957,9 +3058,24 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data, extraInfo = 
       <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
       <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
     </Style>
+    <Style ss:ID="cPlate">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#1e3a8a"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
     <Style ss:ID="cBold">
       <Alignment ss:Vertical="Center"/>
       <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cInt">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <NumberFormat ss:Format="#,##0"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cNumber">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
+      <NumberFormat ss:Format="#,##0.00"/>
       <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
     </Style>
     <Style ss:ID="cNumberBold">
@@ -2967,21 +3083,202 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data, extraInfo = 
       <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#047857"/>
       <NumberFormat ss:Format="#,##0.00"/>
       <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
-    </Style>
-  </Styles>
-  <Worksheet ss:Name="Bao_Cao_Luy_Ke">
+    </Style>`;
+
+  let worksheets = '';
+
+  // SHEET 1: Chi tiết từng ngày và xe
+  if (view === 'all' || view === 'daily_vehicle') {
+    let rows = '';
+    let idx = 1;
+    let totTrips = 0;
+    let totVol = 0;
+
+    for (const item of dailyVehicleBreakdown) {
+      const trips = Number(item.trips) || 0;
+      const vol = Number(item.volume) || 0;
+      const avg = Number(item.avg_volume) || (trips > 0 ? Math.round((vol / trips) * 100) / 100 : 0);
+      totTrips += trips;
+      totVol += vol;
+
+      rows += `
+      <Row>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${idx++}</Data></Cell>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.work_date || '')}</Data></Cell>
+        <Cell ss:StyleID="cPlate"><Data ss:Type="String">${escapeXml(item.plate_number || '')}</Data></Cell>
+        <Cell><Data ss:Type="String">${escapeXml(item.project_name || 'Dự án')}</Data></Cell>
+        <Cell ss:StyleID="cBold"><Data ss:Type="String">${escapeXml(item.supplier_name || '')}</Data></Cell>
+        <Cell><Data ss:Type="String">${escapeXml(item.material_name || '')}</Data></Cell>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.unit || 'm³')}</Data></Cell>
+        <Cell ss:StyleID="cInt"><Data ss:Type="Number">${trips}</Data></Cell>
+        <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${vol}</Data></Cell>
+        <Cell ss:StyleID="cNumber"><Data ss:Type="Number">${avg}</Data></Cell>
+      </Row>`;
+    }
+
+    const finalAvg = totTrips > 0 ? Math.round((totVol / totTrips) * 100) / 100 : 0;
+
+    worksheets += `
+  <Worksheet ss:Name="Chi_Tiet_Ngay_Va_Xe">
+    <Table ss:DefaultRowHeight="22">
+      <Column ss:Width="40"/>
+      <Column ss:Width="95"/>
+      <Column ss:Width="105"/>
+      <Column ss:Width="160"/>
+      <Column ss:Width="180"/>
+      <Column ss:Width="160"/>
+      <Column ss:Width="55"/>
+      <Column ss:Width="85"/>
+      <Column ss:Width="135"/>
+      <Column ss:Width="110"/>
+
+      <Row ss:Height="30">
+        <Cell ss:MergeAcross="9" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO CHI TIẾT SẢN LƯỢNG THEO TỪNG NGÀY VÀ TỪNG XE</Data></Cell>
+      </Row>
+      <Row ss:Height="20">
+        <Cell ss:MergeAcross="9" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)}</Data></Cell>
+      </Row>
+      <Row/>
+      <Row ss:Height="26">
+        <Cell ss:StyleID="Header"><Data ss:Type="String">STT</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Ngày Nhập</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Biển Số Xe</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Dự Án / Công Trường</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Nhà Cung Cấp</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Loại Vật Tư</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">ĐVT</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Số Chuyến</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Khối Lượng Trong Ngày</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">TB / Chuyến</Data></Cell>
+      </Row>
+      ${rows}
+      <Row ss:Height="24" ss:StyleID="TotalRow">
+        <Cell ss:MergeAcross="6" ss:StyleID="TotalRow"><Data ss:Type="String">TỔNG CỘNG:</Data></Cell>
+        <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${totTrips}</Data></Cell>
+        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${Math.round(totVol * 100) / 100}</Data></Cell>
+        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${finalAvg}</Data></Cell>
+      </Row>
+    </Table>
+  </Worksheet>`;
+  }
+
+  // SHEET 2: Tổng hợp theo xe
+  if (view === 'all' || view === 'vehicle_summary') {
+    let rows = '';
+    let idx = 1;
+    let totTrips = 0;
+    let totVol = 0;
+
+    for (const item of vehicleSummary) {
+      const days = Number(item.active_days) || 1;
+      const trips = Number(item.trips) || 0;
+      const vol = Number(item.volume) || 0;
+      const avg = Number(item.avg_volume) || (trips > 0 ? Math.round((vol / trips) * 100) / 100 : 0);
+      totTrips += trips;
+      totVol += vol;
+
+      rows += `
+      <Row>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${idx++}</Data></Cell>
+        <Cell ss:StyleID="cPlate"><Data ss:Type="String">${escapeXml(item.plate_number || '')}</Data></Cell>
+        <Cell ss:StyleID="cBold"><Data ss:Type="String">${escapeXml(item.supplier_name || '')}</Data></Cell>
+        <Cell><Data ss:Type="String">${escapeXml(item.project_name || 'Dự án')}</Data></Cell>
+        <Cell><Data ss:Type="String">${escapeXml(item.material_name || '')}</Data></Cell>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.unit || 'm³')}</Data></Cell>
+        <Cell ss:StyleID="cInt"><Data ss:Type="Number">${days}</Data></Cell>
+        <Cell ss:StyleID="cInt"><Data ss:Type="Number">${trips}</Data></Cell>
+        <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${vol}</Data></Cell>
+        <Cell ss:StyleID="cNumber"><Data ss:Type="Number">${avg}</Data></Cell>
+      </Row>`;
+    }
+
+    const finalAvg = totTrips > 0 ? Math.round((totVol / totTrips) * 100) / 100 : 0;
+
+    worksheets += `
+  <Worksheet ss:Name="Tong_Hop_Theo_Xe">
+    <Table ss:DefaultRowHeight="22">
+      <Column ss:Width="40"/>
+      <Column ss:Width="110"/>
+      <Column ss:Width="180"/>
+      <Column ss:Width="160"/>
+      <Column ss:Width="160"/>
+      <Column ss:Width="55"/>
+      <Column ss:Width="85"/>
+      <Column ss:Width="95"/>
+      <Column ss:Width="140"/>
+      <Column ss:Width="110"/>
+
+      <Row ss:Height="30">
+        <Cell ss:MergeAcross="9" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO TỔNG HỢP SẢN LƯỢNG THEO PHƯƠNG TIỆN (BIỂN SỐ XE)</Data></Cell>
+      </Row>
+      <Row ss:Height="20">
+        <Cell ss:MergeAcross="9" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)} | Tổng số xe: ${vehicleSummary.length}</Data></Cell>
+      </Row>
+      <Row/>
+      <Row ss:Height="26">
+        <Cell ss:StyleID="Header"><Data ss:Type="String">STT</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Biển Số Xe</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Nhà Cung Cấp</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Dự Án / Công Trường</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Loại Vật Tư</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">ĐVT</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Số Ngày Chạy</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Tổng Số Chuyến</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Tổng Khối Lượng Lũy Kế</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">TB / Chuyến</Data></Cell>
+      </Row>
+      ${rows}
+      <Row ss:Height="24" ss:StyleID="TotalRow">
+        <Cell ss:MergeAcross="6" ss:StyleID="TotalRow"><Data ss:Type="String">TỔNG CỘNG (${vehicleSummary.length} xe):</Data></Cell>
+        <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${totTrips}</Data></Cell>
+        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${Math.round(totVol * 100) / 100}</Data></Cell>
+        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${finalAvg}</Data></Cell>
+      </Row>
+    </Table>
+  </Worksheet>`;
+  }
+
+  // SHEET 3: Tổng hợp theo vật tư
+  if (view === 'all' || view === 'material_summary') {
+    let rows = '';
+    let idx = 1;
+    let totTrips = 0;
+    let totVol = 0;
+
+    for (const item of materialSummary) {
+      const vehCount = Number(item.vehicle_count) || 0;
+      const trips = Number(item.trips) || 0;
+      const vol = Number(item.volume) || 0;
+      totTrips += trips;
+      totVol += vol;
+
+      rows += `
+      <Row>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${idx++}</Data></Cell>
+        <Cell><Data ss:Type="String">${escapeXml(item.project_name || 'Dự án')}</Data></Cell>
+        <Cell ss:StyleID="cBold"><Data ss:Type="String">${escapeXml(item.supplier_name || '')}</Data></Cell>
+        <Cell><Data ss:Type="String">${escapeXml(item.material_name || '')}</Data></Cell>
+        <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.unit || 'm³')}</Data></Cell>
+        <Cell ss:StyleID="cInt"><Data ss:Type="Number">${vehCount}</Data></Cell>
+        <Cell ss:StyleID="cInt"><Data ss:Type="Number">${trips}</Data></Cell>
+        <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${vol}</Data></Cell>
+      </Row>`;
+    }
+
+    worksheets += `
+  <Worksheet ss:Name="Tong_Hop_Theo_Vat_Tu">
     <Table ss:DefaultRowHeight="22">
       <Column ss:Width="40"/>
       <Column ss:Width="180"/>
       <Column ss:Width="200"/>
       <Column ss:Width="180"/>
       <Column ss:Width="60"/>
-      <Column ss:Width="100"/>
-      <Column ss:Width="80"/>
-      <Column ss:Width="140"/>
+      <Column ss:Width="95"/>
+      <Column ss:Width="95"/>
+      <Column ss:Width="150"/>
 
       <Row ss:Height="30">
-        <Cell ss:MergeAcross="7" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO KHỐI LƯỢNG LŨY KẾ VẬT LIỆU THEO DỰ ÁN VÀ NHÀ CUNG CẤP</Data></Cell>
+        <Cell ss:MergeAcross="7" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO TỔNG HỢP VẬT LIỆU THEO DỰ ÁN VÀ NHÀ CUNG CẤP</Data></Cell>
       </Row>
       <Row ss:Height="20">
         <Cell ss:MergeAcross="7" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)}</Data></Cell>
@@ -2991,20 +3288,28 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data, extraInfo = 
         <Cell ss:StyleID="Header"><Data ss:Type="String">STT</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">Dự Án / Công Trường</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">Nhà Cung Cấp</Data></Cell>
-        <Cell ss:StyleID="Header"><Data ss:Type="String">Loại Vật Liệu</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Loại Vật Tư</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">ĐVT</Data></Cell>
-        <Cell ss:StyleID="Header"><Data ss:Type="String">Biển Số Xe</Data></Cell>
-        <Cell ss:StyleID="Header"><Data ss:Type="String">Số Chuyến</Data></Cell>
-        <Cell ss:StyleID="Header"><Data ss:Type="String">Khối Lượng Lũy Kế</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Số Xe Phục Vụ</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Tổng Số Chuyến</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Tổng Khối Lượng Lũy Kế</Data></Cell>
       </Row>
       ${rows}
       <Row ss:Height="24" ss:StyleID="TotalRow">
         <Cell ss:MergeAcross="5" ss:StyleID="TotalRow"><Data ss:Type="String">TỔNG CỘNG:</Data></Cell>
-        <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${finalTrips}</Data></Cell>
-        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${finalVol}</Data></Cell>
+        <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${totTrips}</Data></Cell>
+        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${Math.round(totVol * 100) / 100}</Data></Cell>
       </Row>
     </Table>
-  </Worksheet>
+  </Worksheet>`;
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+  <Styles>${styles}
+  </Styles>${worksheets}
 </Workbook>`;
 }
 
