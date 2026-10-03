@@ -422,71 +422,104 @@ function seedFromInitialJsonIfAvailable(force = false) {
       insUser.run(u.id, u.username, u.password_hash, u.full_name || '', u.role || 'SITE_USER', u.project_id || null, u.status || 'ACTIVE', u.created_at || null);
     }
 
-    // 6. Tickets - Kiểm tra và nạp bổ sung toàn bộ vé chưa có trong DB
-    const existingCodes = new Set(
-      db.prepare('SELECT ticket_code FROM tickets').all().map(r => r.ticket_code)
-    );
+    // 6. Tickets - Cập nhật khối lượng đối soát cho vé đã có và nạp bổ sung toàn bộ vé mới
+    const existingTicketsMap = new Map();
+    db.prepare('SELECT ticket_code, actual_volume, standard_volume FROM tickets').all().forEach(r => {
+      existingTicketsMap.set(r.ticket_code, r);
+    });
 
-    const ticketsToInsert = (data.tickets || []).filter(t => !existingCodes.has(t.ticket_code));
+    const ticketsToUpdate = [];
+    const ticketsToInsert = [];
 
-    if (ticketsToInsert.length > 0) {
-      console.log(`[SEED] Phát hiện ${ticketsToInsert.length} phiếu mới cần nạp vào DB (Hòa Yên ID = ${hyId})...`);
+    for (const t of data.tickets || []) {
+      const ex = existingTicketsMap.get(t.ticket_code);
+      if (ex) {
+        const oldAct = Math.round((Number(ex.actual_volume) || 0) * 100) / 100;
+        const newAct = Math.round((Number(t.actual_volume) || 0) * 100) / 100;
+        const oldStd = Math.round((Number(ex.standard_volume) || 0) * 100) / 100;
+        const newStd = Math.round((Number(t.standard_volume) || 0) * 100) / 100;
+        if (Math.abs(oldAct - newAct) > 0.001 || Math.abs(oldStd - newStd) > 0.001) {
+          ticketsToUpdate.push(t);
+        }
+      } else {
+        ticketsToInsert.push(t);
+      }
+    }
+
+    if (ticketsToUpdate.length > 0 || ticketsToInsert.length > 0) {
+      console.log(`[SEED] Cập nhật ${ticketsToUpdate.length} vé thay đổi khối lượng và nạp ${ticketsToInsert.length} vé mới vào DB (Hòa Yên ID = ${hyId})...`);
       db.exec('PRAGMA foreign_keys = OFF;');
       db.exec('BEGIN TRANSACTION;');
 
-      const insTicket = db.prepare(`
-        INSERT INTO tickets (
-          ticket_code, project_id, project_name, vehicle_id, plate_number,
-          supplier_id, supplier_name, material_id, material_name, unit,
-          time_in, time_out, length, width, height, standard_volume, actual_volume,
-          is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      const matMap = {};
-      db.prepare('SELECT id, name, code FROM materials').all().forEach(m => {
-        if (m.code) matMap[m.code] = m.id;
-        if (m.name) matMap[m.name] = m.id;
-      });
-
-      for (const t of ticketsToInsert) {
-        const isHoaYen = !t.project_id || t.project_id === 4 || t.project_id === 5 || (t.project_name && t.project_name.includes('Hòa Yên'));
-        const pId = isHoaYen ? hyId : t.project_id;
-        const pName = isHoaYen ? hyName : t.project_name;
-        
-        let suppId = t.supplier_id;
-        if (t.supplier_name && suppMap[t.supplier_name]) {
-          suppId = suppMap[t.supplier_name];
-        } else if (t.supplier_name && t.supplier_name.includes('Đức Phúc')) {
-          suppId = ducPhucId;
+      if (ticketsToUpdate.length > 0) {
+        const updTicket = db.prepare(`
+          UPDATE tickets
+          SET actual_volume = ?, standard_volume = ?, is_manual_adjusted = 1,
+              adjustment_reason = 'Cập nhật khối lượng đối soát từ OneDrive (Sổ theo dõi Hòa Yên)'
+          WHERE ticket_code = ?
+        `);
+        for (const t of ticketsToUpdate) {
+          updTicket.run(t.actual_volume, t.standard_volume, t.ticket_code);
         }
+        console.log(`[SEED] Đã cập nhật thành công khối lượng cho ${ticketsToUpdate.length} phiếu!`);
+      }
 
-        let matId = t.material_id;
-        if (t.material_name && matMap[t.material_name]) {
-          matId = matMap[t.material_name];
-        } else if (!matId) {
-          matId = datSanLapId;
+      if (ticketsToInsert.length > 0) {
+        const insTicket = db.prepare(`
+          INSERT INTO tickets (
+            ticket_code, project_id, project_name, vehicle_id, plate_number,
+            supplier_id, supplier_name, material_id, material_name, unit,
+            time_in, time_out, length, width, height, standard_volume, actual_volume,
+            is_manual_adjusted, adjustment_reason, status, created_by, notes, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const matMap = {};
+        db.prepare('SELECT id, name, code FROM materials').all().forEach(m => {
+          if (m.code) matMap[m.code] = m.id;
+          if (m.name) matMap[m.name] = m.id;
+        });
+
+        for (const t of ticketsToInsert) {
+          const isHoaYen = !t.project_id || t.project_id === 4 || t.project_id === 5 || (t.project_name && t.project_name.includes('Hòa Yên'));
+          const pId = isHoaYen ? hyId : t.project_id;
+          const pName = isHoaYen ? hyName : t.project_name;
+          
+          let suppId = t.supplier_id;
+          if (t.supplier_name && suppMap[t.supplier_name]) {
+            suppId = suppMap[t.supplier_name];
+          } else if (t.supplier_name && t.supplier_name.includes('Đức Phúc')) {
+            suppId = ducPhucId;
+          }
+
+          let matId = t.material_id;
+          if (t.material_name && matMap[t.material_name]) {
+            matId = matMap[t.material_name];
+          } else if (!matId) {
+            matId = datSanLapId;
+          }
+
+          insTicket.run(
+            t.ticket_code, pId, pName, t.vehicle_id || null, t.plate_number,
+            suppId || null, t.supplier_name || '', matId, t.material_name || 'Đất san lấp / Đất đắp', t.unit || 'm³',
+            t.time_in, t.time_out || null, t.length || 0, t.width || 0, t.height || 0, t.standard_volume || 0, t.actual_volume || 0,
+            t.is_manual_adjusted ? 1 : 0, t.adjustment_reason || '', t.status || 'CHECKED_OUT', t.created_by || 'Thủ kho Hòa Yên (OneDrive Sync)', t.notes || '', t.created_at || t.time_in
+          );
         }
-
-        insTicket.run(
-          t.ticket_code, pId, pName, t.vehicle_id || null, t.plate_number,
-          suppId || null, t.supplier_name || '', matId, t.material_name || 'Đất san lấp / Đất đắp', t.unit || 'm³',
-          t.time_in, t.time_out || null, t.length || 0, t.width || 0, t.height || 0, t.standard_volume || 0, t.actual_volume || 0,
-          t.is_manual_adjusted ? 1 : 0, t.adjustment_reason || '', t.status || 'CHECKED_OUT', t.created_by || 'Thủ kho Hòa Yên (Import)', t.notes || '', t.created_at || t.time_in
-        );
+        console.log(`[SEED] Đã nạp thành công ${ticketsToInsert.length} phiếu mới!`);
       }
 
       db.exec('COMMIT;');
       db.exec('PRAGMA foreign_keys = ON;');
-      console.log(`[SEED] Đã nạp thành công ${ticketsToInsert.length} phiếu mới!`);
     } else {
-      console.log('[SEED] Tất cả phiếu trong initial_seed.json đã có trong DB.');
+      console.log('[SEED] Tất cả phiếu trong initial_seed.json đã đồng bộ với DB (khối lượng và số lượng đầy đủ).');
     }
 
     const totalNow = db.prepare('SELECT COUNT(*) as count FROM tickets').get().count;
     console.log(`[SEED] Tổng số phiếu hiện có trong DB: ${totalNow}`);
     return {
       success: true,
+      updatedCount: ticketsToUpdate.length,
       insertedCount: ticketsToInsert.length,
       totalTickets: totalNow,
       hoaYenId: hyId
