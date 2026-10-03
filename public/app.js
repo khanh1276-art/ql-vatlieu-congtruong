@@ -1628,9 +1628,9 @@ function exportDailyExcel() {
   const supplierSel = document.getElementById('dailySupplierFilter');
   const supplierId = supplierSel ? supplierSel.value : '';
 
-  let url = `/api/reports/export-excel?type=daily&date=${date}`;
-  if (projectId) url += `&projectId=${projectId}`;
-  if (supplierId) url += `&supplierId=${supplierId}`;
+  let url = `/api/reports/export-excel?type=daily&date=${encodeURIComponent(date)}`;
+  if (projectId) url += `&projectId=${encodeURIComponent(projectId)}`;
+  if (supplierId) url += `&supplierId=${encodeURIComponent(supplierId)}`;
   if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
 
   const base = getApiBaseUrl();
@@ -1754,9 +1754,13 @@ function exportCumulativeExcel() {
   const endDate = document.getElementById('cumEndDate')?.value || getTodayDateStr();
   const projSel = document.getElementById('cumProjectFilter');
   const projectId = projSel ? projSel.value : AppState.selectedProjectId;
+  const supplierId = document.getElementById('cumSupplierFilter')?.value || '';
+  const materialId = document.getElementById('cumMaterialFilter')?.value || '';
 
   let url = `/api/reports/export-excel?type=cumulative&startDate=${startDate}&endDate=${endDate}`;
-  if (projectId) url += `&projectId=${projectId}`;
+  if (projectId) url += `&projectId=${encodeURIComponent(projectId)}`;
+  if (supplierId) url += `&supplierId=${encodeURIComponent(supplierId)}`;
+  if (materialId) url += `&materialId=${encodeURIComponent(materialId)}`;
   if (AppState.token) url += `&token=${encodeURIComponent(AppState.token)}`;
 
   const base = getApiBaseUrl();

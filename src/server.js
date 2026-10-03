@@ -2157,12 +2157,37 @@ const server = http.createServer(async (req, res) => {
       const endDate = url.searchParams.get('endDate') || date;
       let projectId = url.searchParams.get('projectId');
       const supplierId = url.searchParams.get('supplierId');
+      const materialId = url.searchParams.get('materialId');
 
       if (currentUser && currentUser.role === 'SITE_USER') {
         projectId = currentUser.project_id;
       }
 
-      let filename = `Bao_Cao_${type === 'daily' ? `Ngay_${date}` : `Luy_Ke_${startDate}_den_${endDate}`}.xls`;
+      let matInfo = null;
+      if (materialId) {
+        if (/^\d+$/.test(String(materialId).trim())) {
+          matInfo = db.prepare('SELECT id, name, code, unit FROM materials WHERE id = ?').get(parseInt(materialId, 10));
+        }
+        if (!matInfo) {
+          matInfo = db.prepare('SELECT id, name, code, unit FROM materials WHERE name = ?').get(String(materialId).trim());
+        }
+      }
+
+      let suppInfo = null;
+      if (supplierId && /^\d+$/.test(String(supplierId).trim())) {
+        suppInfo = db.prepare('SELECT id, name, code FROM suppliers WHERE id = ?').get(parseInt(supplierId, 10));
+      }
+
+      let matSuffix = '';
+      if (matInfo) {
+        const slug = (matInfo.name || '')
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-zA-Z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+        if (slug) matSuffix = `_${slug}`;
+      }
+
+      let filename = `Bao_Cao_${type === 'daily' ? `Ngay_${date}` : `Luy_Ke_${startDate}_den_${endDate}`}${matSuffix}.xls`;
       let xmlContent = '';
 
       if (type === 'daily') {
@@ -2176,11 +2201,20 @@ const server = http.createServer(async (req, res) => {
           filterSql += ` AND supplier_id = ?`;
           params.push(parseInt(supplierId, 10));
         }
+        if (materialId) {
+          if (/^\d+$/.test(String(materialId).trim())) {
+            filterSql += ` AND material_id = ?`;
+            params.push(parseInt(materialId, 10));
+          } else {
+            filterSql += ` AND material_name = ?`;
+            params.push(String(materialId).trim());
+          }
+        }
 
         const tickets = db.prepare(`SELECT * FROM tickets WHERE ${filterSql} ORDER BY time_in ASC`).all(...params);
-        const summary = db.prepare(`SELECT COUNT(*) as trips FROM tickets WHERE ${filterSql}`).get(...params);
+        const summary = db.prepare(`SELECT COUNT(*) as trips, ROUND(SUM(actual_volume), 2) as total_volume FROM tickets WHERE ${filterSql}`).get(...params);
 
-        xmlContent = buildDailyExcelXml(date, summary, tickets);
+        xmlContent = buildDailyExcelXml(date, summary, tickets, { matInfo, suppInfo });
       } else {
         let filterSql = `date(time_in) >= date(?) AND date(time_in) <= date(?) AND status != 'CANCELLED'`;
         const params = [startDate, endDate];
@@ -2191,6 +2225,15 @@ const server = http.createServer(async (req, res) => {
         if (supplierId) {
           filterSql += ` AND supplier_id = ?`;
           params.push(parseInt(supplierId, 10));
+        }
+        if (materialId) {
+          if (/^\d+$/.test(String(materialId).trim())) {
+            filterSql += ` AND material_id = ?`;
+            params.push(parseInt(materialId, 10));
+          } else {
+            filterSql += ` AND material_name = ?`;
+            params.push(String(materialId).trim());
+          }
         }
 
         const cumulativeData = db.prepare(`
@@ -2208,14 +2251,14 @@ const server = http.createServer(async (req, res) => {
           ORDER BY project_name ASC, supplier_name ASC, volume DESC
         `).all(...params);
 
-        const summary = db.prepare(`SELECT COUNT(*) as trips FROM tickets WHERE ${filterSql}`).get(...params);
+        const summary = db.prepare(`SELECT COUNT(*) as trips, ROUND(SUM(actual_volume), 2) as total_volume FROM tickets WHERE ${filterSql}`).get(...params);
 
-        xmlContent = buildCumulativeExcelXml(startDate, endDate, summary, cumulativeData);
+        xmlContent = buildCumulativeExcelXml(startDate, endDate, summary, cumulativeData, { matInfo, suppInfo });
       }
 
       res.writeHead(200, {
         'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${filename}"`
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`
       });
       return res.end(xmlContent);
     }
@@ -2819,11 +2862,18 @@ function buildDailyExcelTemplateXml() {
 </Workbook>`;
 }
 
-function buildCumulativeExcelXml(startDate, endDate, summary, data) {
+function buildCumulativeExcelXml(startDate, endDate, summary, data, extraInfo = {}) {
   let rows = '';
   let index = 1;
+  let totalTrips = 0;
+  let totalVol = 0;
 
   for (const item of data) {
+    const v = Number(item.volume) || 0;
+    const trips = Number(item.trips) || 0;
+    totalTrips += trips;
+    totalVol += v;
+
     rows += `
     <Row>
       <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${index++}</Data></Cell>
@@ -2832,10 +2882,20 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data) {
       <Cell><Data ss:Type="String">${escapeXml(item.material_name)}</Data></Cell>
       <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.unit || 'm³')}</Data></Cell>
       <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.plate_number)}</Data></Cell>
-      <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${item.trips}</Data></Cell>
-      <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${item.volume}</Data></Cell>
+      <Cell ss:StyleID="cCenter"><Data ss:Type="Number">${trips}</Data></Cell>
+      <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${v}</Data></Cell>
     </Row>`;
   }
+
+  const finalTrips = (summary && summary.trips !== undefined) ? summary.trips : totalTrips;
+  const finalVol = (summary && summary.total_volume !== undefined) ? summary.total_volume : Math.round(totalVol * 100) / 100;
+  const matText = (extraInfo && extraInfo.matInfo) ? extraInfo.matInfo.name : '';
+  const suppText = (extraInfo && extraInfo.suppInfo) ? extraInfo.suppInfo.name : '';
+
+  let filterText = `Giai đoạn: Từ ${startDate} đến ${endDate}`;
+  if (matText) filterText += ` | Loại vật tư: ${matText}`;
+  if (suppText) filterText += ` | Nhà cung cấp: ${suppText}`;
+  filterText += ` | Tổng lượt xe: ${finalTrips} lượt | Tổng khối lượng: ${finalVol.toFixed(2)}`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <?mso-application progid="Excel.Sheet"?>
@@ -2874,6 +2934,25 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data) {
       <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#065f46"/>
       <Interior ss:Color="#d1fae5" ss:Pattern="Solid"/>
     </Style>
+    <Style ss:ID="TotalRowCenter">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#047857"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#047857"/>
+      </Borders>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#065f46"/>
+      <Interior ss:Color="#d1fae5" ss:Pattern="Solid"/>
+    </Style>
+    <Style ss:ID="TotalRowNumber">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
+      <Borders>
+        <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#047857"/>
+        <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#047857"/>
+      </Borders>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#065f46"/>
+      <NumberFormat ss:Format="#,##0.00"/>
+      <Interior ss:Color="#d1fae5" ss:Pattern="Solid"/>
+    </Style>
     <Style ss:ID="cCenter">
       <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
       <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
@@ -2895,17 +2974,17 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data) {
       <Column ss:Width="40"/>
       <Column ss:Width="180"/>
       <Column ss:Width="200"/>
-      <Column ss:Width="150"/>
+      <Column ss:Width="180"/>
       <Column ss:Width="60"/>
       <Column ss:Width="100"/>
       <Column ss:Width="80"/>
-      <Column ss:Width="120"/>
+      <Column ss:Width="140"/>
 
       <Row ss:Height="30">
         <Cell ss:MergeAcross="7" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO KHỐI LƯỢNG LŨY KẾ VẬT LIỆU THEO DỰ ÁN VÀ NHÀ CUNG CẤP</Data></Cell>
       </Row>
       <Row ss:Height="20">
-        <Cell ss:MergeAcross="7" ss:StyleID="SubTitle"><Data ss:Type="String">Giai đoạn: Từ ${startDate} đến ${endDate} | Tổng lượt: ${summary.trips} lượt</Data></Cell>
+        <Cell ss:MergeAcross="7" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)}</Data></Cell>
       </Row>
       <Row/>
       <Row ss:Height="26">
@@ -2920,9 +2999,9 @@ function buildCumulativeExcelXml(startDate, endDate, summary, data) {
       </Row>
       ${rows}
       <Row ss:Height="24" ss:StyleID="TotalRow">
-        <Cell ss:MergeAcross="5" ss:StyleID="TotalRow"><Data ss:Type="String">TỔNG LƯỢT XE GIAI ĐOẠN:</Data></Cell>
-        <Cell ss:StyleID="TotalRow"><Data ss:Type="Number">${summary.trips}</Data></Cell>
-        <Cell ss:StyleID="TotalRow"><Data ss:Type="String">Lượt</Data></Cell>
+        <Cell ss:MergeAcross="5" ss:StyleID="TotalRow"><Data ss:Type="String">TỔNG CỘNG:</Data></Cell>
+        <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${finalTrips}</Data></Cell>
+        <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${finalVol}</Data></Cell>
       </Row>
     </Table>
   </Worksheet>
