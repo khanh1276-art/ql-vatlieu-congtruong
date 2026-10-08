@@ -16,7 +16,10 @@ const AppState = {
   activeCheckoutTicket: null,
   hourlyChart: null,
   plateDebounceTimer: null,
-  currentScannedPlateImage: null
+  currentScannedPlateImage: null,
+  filterDailyLowVolOnly: false,
+  filterCumLowVolOnly: false,
+  cumVehiclesList: []
 };
 
 // ============================================================================
@@ -108,6 +111,24 @@ document.addEventListener('DOMContentLoaded', () => {
       box.classList.add('hidden');
     }
   });
+
+  // Lắng nghe thay đổi khối lượng để cảnh báo < 2m³ tức thì
+  const bindVolWarning = (inputId, warnId) => {
+    const input = document.getElementById(inputId);
+    const warn = document.getElementById(warnId);
+    if (!input || !warn) return;
+    input.addEventListener('input', () => {
+      const val = parseFloat(input.value);
+      if (!isNaN(val) && val < 2 && val >= 0) {
+        warn.classList.remove('hidden');
+      } else {
+        warn.classList.add('hidden');
+      }
+    });
+  };
+  bindVolWarning('edit_actual_volume', 'editVolWarning');
+  bindVolWarning('coutActualVolume', 'coutVolWarning');
+  bindVolWarning('checkin_actual_volume', 'checkinVolWarning');
 });
 
 function startClock() {
@@ -935,6 +956,11 @@ async function handleCheckIn(event) {
     showToast('Vui lòng ghi rõ lý do điều chỉnh khi có sai khác so với định mức', 'error');
     return;
   }
+  if (actualVolume < 2) {
+    if (!confirm(`⚠️ CẢNH BÁO SỐ LIỆU:\n\nKhối lượng nghiệm thu là ${actualVolume} ${unit} (< 2 ${unit}).\nĐây là khối lượng thấp bất thường đối với xe chở vật liệu công trường.\n\nBạn có chắc chắn muốn xác nhận xe vào với khối lượng này không?`)) {
+      return;
+    }
+  }
 
   const payload = {
     plate_number: plate,
@@ -1172,6 +1198,15 @@ function openCheckOutModal(ticketId) {
   const notesEl = document.getElementById('coutNotes');
   if (notesEl) notesEl.value = '';
 
+  const warnOut = document.getElementById('coutVolWarning');
+  if (warnOut) {
+    if (Number(t.actual_volume) < 2) {
+      warnOut.classList.remove('hidden');
+    } else {
+      warnOut.classList.add('hidden');
+    }
+  }
+
   const modal = document.getElementById('checkOutModal');
   if (modal) modal.classList.remove('hidden');
 }
@@ -1195,6 +1230,11 @@ async function submitCheckOut() {
   if (isNaN(actualVolume) || actualVolume <= 0) {
     showToast(`Khối lượng thực nhận phải lớn hơn 0 ${unit}`, 'error');
     return;
+  }
+  if (actualVolume < 2) {
+    if (!confirm(`⚠️ CẢNH BÁO SỐ LIỆU:\n\nKhối lượng nghiệm thu khi ra là ${actualVolume} ${unit} (< 2 ${unit}).\nĐây là khối lượng thấp bất thường (thường là xe chưa cập nhật khối lượng thùng xe).\n\nBạn có chắc chắn muốn xác nhận xe ra với số liệu này không?`)) {
+      return;
+    }
   }
 
   try {
@@ -1475,81 +1515,159 @@ async function loadDailyReport() {
       }
     }
 
-    // Bảng kê chi tiết từng lượt xe
-    const ticketsTbody = document.getElementById('dailyTicketsTableBody');
-    if (ticketsTbody) {
-      if (AppState.dailyTickets.length === 0) {
-        ticketsTbody.innerHTML = `<tr><td colspan="14" class="text-center py-10 text-slate-400 font-medium">Không có lượt xe nào ghi nhận trong ngày ${date}</td></tr>`;
-        return;
-      }
-
-      ticketsTbody.innerHTML = AppState.dailyTickets.map((t, index) => {
-        const adjustBadge = t.is_manual_adjusted
-          ? `<span class="text-amber-700 font-semibold" title="${escapeHtml(t.adjustment_reason || '')}">⚠️ ${escapeHtml(t.adjustment_reason || 'Điều chỉnh')}</span>`
-          : `<span class="text-slate-400">Chuẩn</span>`;
-
-        const statusBadge = t.status === 'IN_YARD'
-          ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Trong bãi</span>`
-          : (t.status === 'COMPLETED'
-            ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700">Đã xong</span>`
-            : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Hủy</span>`);
-
-        const currentUser = AppState.currentUser;
-        const isAdmin = currentUser && currentUser.role === 'ADMIN';
-        const isMod = currentUser && currentUser.role === 'MODERATOR';
-        const isSiteUser = currentUser && currentUser.role === 'SITE_USER';
-
-        // Tính thời gian trôi qua từ lúc tạo phiếu
-        let hoursElapsed = 0;
-        try {
-          const tTime = new Date((t.time_in || '').replace(' ', 'T')).getTime();
-          hoursElapsed = (Date.now() - tTime) / (1000 * 60 * 60);
-        } catch (e) {
-          hoursElapsed = 999;
-        }
-        const isWithin24h = hoursElapsed <= 24;
-
-        const canEdit = isAdmin || isMod || (isSiteUser && isWithin24h && t.project_id === currentUser.project_id);
-
-        let actionHtml = `<button onclick="fetchAndShowTicket(${t.id})" class="text-blue-600 hover:underline font-semibold" title="In phiếu">🖨️ In</button>`;
-
-        if (canEdit) {
-          actionHtml += ` <button onclick="openEditTicketModalById(${t.id})" class="text-amber-600 hover:underline font-semibold ml-2" title="Điều chỉnh thông tin phiếu">✏️ Sửa</button>`;
-        } else if (isSiteUser && !isWithin24h) {
-          actionHtml += ` <span class="text-slate-400 ml-2" title="Phiếu đã quá 24h và đã bị khóa sổ. Chỉ Admin hoặc Điều Hành mới có quyền sửa!">🔒 Khóa</span>`;
-        }
-
-        if (isAdmin) {
-          actionHtml += ` <button onclick="deleteTicket(${t.id}, '${escapeHtml(t.ticket_code)}')" class="text-red-600 hover:underline font-semibold ml-2" title="Xóa vĩnh viễn phiếu xe">🗑️ Xóa</button>`;
-        }
-
-        return `
-          <tr class="hover:bg-slate-50 transition">
-            <td class="px-3 py-2.5 text-center font-mono text-slate-500">${index + 1}</td>
-            <td class="px-3 py-2.5 font-mono font-medium text-slate-700">${t.ticket_code}</td>
-            <td class="px-3 py-2.5 font-medium text-slate-800 text-xs">${escapeHtml(t.project_name || '-')}</td>
-            <td class="px-3 py-2.5 font-mono font-bold text-slate-900">${t.plate_number}</td>
-            <td class="px-3 py-2.5 font-medium text-slate-800">${escapeHtml(t.supplier_name)}</td>
-            <td class="px-3 py-2.5 text-slate-700">${escapeHtml(t.material_name)}</td>
-            <td class="px-3 py-2.5 text-center font-bold text-blue-700">${escapeHtml(t.unit || 'm³')}</td>
-            <td class="px-3 py-2.5 text-center font-mono text-slate-600">${formatShortTime(t.time_in)}</td>
-            <td class="px-3 py-2.5 text-center font-mono text-slate-600">${formatShortTime(t.time_out)}</td>
-            <td class="px-3 py-2.5 text-right font-mono text-slate-600">${Number(t.standard_volume).toFixed(2)}</td>
-            <td class="px-3 py-2.5 text-right font-mono font-bold text-emerald-700">${Number(t.actual_volume).toFixed(2)}</td>
-            <td class="px-3 py-2.5 text-xs">${adjustBadge}</td>
-            <td class="px-3 py-2.5 text-center">${statusBadge}</td>
-            <td class="px-3 py-2.5 text-center no-print whitespace-nowrap">
-              ${actionHtml}
-            </td>
-          </tr>
-        `;
-      }).join('');
-    }
+    // Vẽ bảng chi tiết từng lượt xe và banner cảnh báo khối lượng < 2m3
+    renderDailyTicketsTable();
 
   } catch (err) {
     console.error('Lỗi nạp báo cáo ngày:', err);
     showToast('Lỗi khi tải dữ liệu báo cáo ngày', 'error');
   }
+}
+
+function renderDailyTicketsTable() {
+  const ticketsTbody = document.getElementById('dailyTicketsTableBody');
+  if (!ticketsTbody) return;
+
+  const lowVolTickets = AppState.dailyTickets.filter(t => Number(t.actual_volume) < 2 && t.status !== 'CANCELLED');
+  const lowVolCount = lowVolTickets.length;
+
+  const dailyLowVolBanner = document.getElementById('dailyLowVolBanner');
+  const dailyLowVolCount = document.getElementById('dailyLowVolCount');
+  const dailyLowVolCard = document.getElementById('dailyLowVolCardCount');
+  if (dailyLowVolCount) dailyLowVolCount.textContent = lowVolCount;
+  if (dailyLowVolCard) dailyLowVolCard.textContent = lowVolCount;
+
+  if (dailyLowVolBanner) {
+    if (lowVolCount > 0) {
+      dailyLowVolBanner.classList.remove('hidden');
+    } else {
+      dailyLowVolBanner.classList.add('hidden');
+    }
+  }
+
+  let displayTickets = AppState.dailyTickets;
+  if (AppState.filterDailyLowVolOnly) {
+    displayTickets = lowVolTickets;
+  }
+
+  const elRec = document.getElementById('dailyTableRecordCount');
+  if (elRec) {
+    if (AppState.filterDailyLowVolOnly) {
+      elRec.innerHTML = `<span class="text-red-600 font-bold">Đang lọc: ${displayTickets.length} xe &lt; 2 m³</span> / Tổng: ${AppState.dailyTickets.length} xe`;
+    } else {
+      elRec.textContent = `${AppState.dailyTickets.length} chuyến xe`;
+    }
+  }
+
+  if (displayTickets.length === 0) {
+    if (AppState.filterDailyLowVolOnly) {
+      ticketsTbody.innerHTML = `<tr><td colspan="14" class="text-center py-10 text-emerald-600 font-bold">✓ Không có chuyến xe nào có khối lượng &lt; 2 m³ cần sửa trong ngày!</td></tr>`;
+    } else {
+      const dateInput = document.getElementById('dailyReportDate');
+      const date = dateInput ? dateInput.value : '';
+      ticketsTbody.innerHTML = `<tr><td colspan="14" class="text-center py-10 text-slate-400 font-medium">Không có lượt xe nào ghi nhận trong ngày ${date}</td></tr>`;
+    }
+    return;
+  }
+
+  ticketsTbody.innerHTML = displayTickets.map((t, index) => {
+    const isLowVol = Number(t.actual_volume) < 2 && t.status !== 'CANCELLED';
+
+    const adjustBadge = t.is_manual_adjusted
+      ? `<span class="text-amber-700 font-semibold" title="${escapeHtml(t.adjustment_reason || '')}">⚠️ ${escapeHtml(t.adjustment_reason || 'Điều chỉnh')}</span>`
+      : (isLowVol ? `<span class="text-red-600 font-bold text-[11px]">⚠️ Chưa điều chỉnh</span>` : `<span class="text-slate-400">Chuẩn</span>`);
+
+    const statusBadge = t.status === 'IN_YARD'
+      ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Trong bãi</span>`
+      : (t.status === 'COMPLETED'
+        ? `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-700">Đã xong</span>`
+        : `<span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">Hủy</span>`);
+
+    const currentUser = AppState.currentUser;
+    const isAdmin = currentUser && currentUser.role === 'ADMIN';
+    const isMod = currentUser && currentUser.role === 'MODERATOR';
+    const isSiteUser = currentUser && currentUser.role === 'SITE_USER';
+
+    // Tính thời gian trôi qua từ lúc tạo phiếu
+    let hoursElapsed = 0;
+    try {
+      const tTime = new Date((t.time_in || '').replace(' ', 'T')).getTime();
+      hoursElapsed = (Date.now() - tTime) / (1000 * 60 * 60);
+    } catch (e) {
+      hoursElapsed = 999;
+    }
+    const isWithin24h = hoursElapsed <= 24;
+
+    const canEdit = isAdmin || isMod || (isSiteUser && isWithin24h && t.project_id === currentUser.project_id);
+
+    let actionHtml = `<button onclick="fetchAndShowTicket(${t.id})" class="text-blue-600 hover:underline font-semibold" title="In phiếu">🖨️ In</button>`;
+
+    if (canEdit) {
+      if (isLowVol) {
+        actionHtml += ` <button onclick="openEditTicketModalById(${t.id})" class="px-2.5 py-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-lg text-[11px] font-bold shadow-sm inline-flex items-center gap-1 animate-pulse ml-1" title="Khối lượng < 2m³ - Nhấn để cập nhật ngay!"><span>✏️</span> Cập nhật ngay ⚠️</button>`;
+      } else {
+        actionHtml += ` <button onclick="openEditTicketModalById(${t.id})" class="text-amber-600 hover:underline font-semibold ml-2" title="Điều chỉnh thông tin phiếu">✏️ Sửa</button>`;
+      }
+    } else if (isSiteUser && !isWithin24h) {
+      actionHtml += ` <span class="text-slate-400 ml-2" title="Phiếu đã quá 24h và đã bị khóa sổ. Chỉ Admin hoặc Điều Hành mới có quyền sửa!">🔒 Khóa</span>`;
+    }
+
+    if (isAdmin) {
+      actionHtml += ` <button onclick="deleteTicket(${t.id}, '${escapeHtml(t.ticket_code)}')" class="text-red-600 hover:underline font-semibold ml-2" title="Xóa vĩnh viễn phiếu xe">🗑️ Xóa</button>`;
+    }
+
+    const rowBgClass = isLowVol 
+      ? 'bg-amber-50/80 hover:bg-amber-100/80 border-l-4 border-l-red-500 font-medium' 
+      : 'hover:bg-slate-50 transition';
+
+    const actualVolHtml = isLowVol
+      ? `<div class="font-bold text-red-600 flex items-center justify-end gap-1">
+          <span class="text-xs">⚠️</span>
+          <span class="text-sm">${Number(t.actual_volume).toFixed(2)}</span>
+         </div>
+         <span class="text-[10px] text-red-600 font-semibold block">Chưa nghiệm thu (&lt; 2m³)</span>`
+      : `<span class="font-bold text-emerald-700">${Number(t.actual_volume).toFixed(2)}</span>`;
+
+    return `
+      <tr class="${rowBgClass}">
+        <td class="px-3 py-2.5 text-center font-mono text-slate-500">${index + 1}</td>
+        <td class="px-3 py-2.5 font-mono font-medium text-slate-700">${t.ticket_code}</td>
+        <td class="px-3 py-2.5 font-medium text-slate-800 text-xs">${escapeHtml(t.project_name || '-')}</td>
+        <td class="px-3 py-2.5 font-mono font-bold text-slate-900">${t.plate_number}</td>
+        <td class="px-3 py-2.5 font-medium text-slate-800">${escapeHtml(t.supplier_name)}</td>
+        <td class="px-3 py-2.5 text-slate-700">${escapeHtml(t.material_name)}</td>
+        <td class="px-3 py-2.5 text-center font-bold text-blue-700">${escapeHtml(t.unit || 'm³')}</td>
+        <td class="px-3 py-2.5 text-center font-mono text-slate-600">${formatShortTime(t.time_in)}</td>
+        <td class="px-3 py-2.5 text-center font-mono text-slate-600">${formatShortTime(t.time_out)}</td>
+        <td class="px-3 py-2.5 text-right font-mono text-slate-600">${Number(t.standard_volume).toFixed(2)}</td>
+        <td class="px-3 py-2.5 text-right font-mono">${actualVolHtml}</td>
+        <td class="px-3 py-2.5 text-xs">${adjustBadge}</td>
+        <td class="px-3 py-2.5 text-center">${statusBadge}</td>
+        <td class="px-3 py-2.5 text-center no-print whitespace-nowrap">
+          ${actionHtml}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function toggleDailyLowVolFilter() {
+  AppState.filterDailyLowVolOnly = !AppState.filterDailyLowVolOnly;
+  const btn = document.getElementById('btnDailyFilterLowVol');
+  const btnText = document.getElementById('btnDailyFilterLowVolText');
+  if (btnText) {
+    btnText.textContent = AppState.filterDailyLowVolOnly ? 'Hiện Lại Toàn Bộ Xe' : 'Chỉ Hiện Xe < 2 m³ Cần Sửa';
+  }
+  if (btn) {
+    if (AppState.filterDailyLowVolOnly) {
+      btn.classList.replace('bg-amber-600', 'bg-slate-800');
+      btn.classList.replace('hover:bg-amber-700', 'hover:bg-slate-900');
+    } else {
+      btn.classList.replace('bg-slate-800', 'bg-amber-600');
+      btn.classList.replace('hover:bg-slate-900', 'hover:bg-amber-700');
+    }
+  }
+  renderDailyTicketsTable();
 }
 
 // Modal Điều Chỉnh Phiếu
@@ -1578,6 +1696,15 @@ function openEditTicketModalById(id) {
   const notesIn = document.getElementById('edit_notes');
   if (notesIn) notesIn.value = ticket.notes || '';
 
+  const warnEl = document.getElementById('editVolWarning');
+  if (warnEl) {
+    if (Number(ticket.actual_volume) < 2) {
+      warnEl.classList.remove('hidden');
+    } else {
+      warnEl.classList.add('hidden');
+    }
+  }
+
   const modal = document.getElementById('editTicketModal');
   if (modal) modal.classList.remove('hidden');
 }
@@ -1602,6 +1729,12 @@ async function saveEditTicket(e) {
   if (isNaN(actual_volume) || actual_volume <= 0) {
     showToast('Khối lượng nghiệm thu phải lớn hơn 0', 'error');
     return;
+  }
+  if (actual_volume < 2) {
+    const confirmSave = confirm(`⚠️ CẢNH BÁO SỐ LIỆU:\n\nKhối lượng nhập là ${actual_volume} m³ (vẫn nhỏ hơn 2 m³).\nĐây có thể là số liệu chưa được nghiệm thu thực tế theo kích thước thùng xe.\n\nBạn có chắc chắn muốn lưu phiếu này với khối lượng < 2 m³ không?`);
+    if (!confirmSave) {
+      return;
+    }
   }
 
   try {
@@ -1729,6 +1862,22 @@ async function loadCumulativeReport() {
     const elDays = document.getElementById('cumActiveDays');
     if (elDays) elDays.textContent = summary.active_days || 0;
 
+    // Cảnh báo xe có khối lượng < 2 m3 trong kỳ lũy kế
+    const lowVolCount = summary.low_volume_count || 0;
+    const cumBanner = document.getElementById('cumLowVolBanner');
+    const cumCountEl = document.getElementById('cumLowVolCount');
+    const cumCardCount = document.getElementById('cumLowVolCardCount');
+    if (cumCountEl) cumCountEl.textContent = lowVolCount;
+    if (cumCardCount) cumCardCount.textContent = lowVolCount;
+
+    if (cumBanner) {
+      if (lowVolCount > 0) {
+        cumBanner.classList.remove('hidden');
+      } else {
+        cumBanner.classList.add('hidden');
+      }
+    }
+
     // Bảng 1: Lũy kế theo Loại Vật Liệu & ĐVT
     const matTbody = document.getElementById('cumMaterialTableBody');
     if (matTbody) {
@@ -1793,37 +1942,81 @@ async function loadCumulativeReport() {
     }
 
     // Bảng 4: Thống kê sản lượng theo từng phương tiện (Biển số xe)
-    const vehTbody = document.getElementById('cumVehicleTableBody');
-    const vehCountEl = document.getElementById('cumVehicleTableCount');
-    const vehiclesList = data.byVehicle || [];
-    if (vehCountEl) {
-      vehCountEl.textContent = `${vehiclesList.length} xe`;
-    }
-    if (vehTbody) {
-      if (vehiclesList.length === 0) {
-        vehTbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-slate-400">Không có dữ liệu phương tiện trong giai đoạn</td></tr>`;
-      } else {
-        vehTbody.innerHTML = vehiclesList.map((v, idx) => `
-          <tr class="hover:bg-slate-50 transition">
-            <td class="px-4 py-3 text-center font-mono text-slate-500">${idx + 1}</td>
-            <td class="px-4 py-3 font-mono font-bold text-blue-900">${escapeHtml(v.plate_number)}</td>
-            <td class="px-4 py-3 font-medium text-slate-800">${escapeHtml(v.supplier_name || '-')}</td>
-            <td class="px-4 py-3 text-slate-600">${escapeHtml(v.project_name || '-')}</td>
-            <td class="px-4 py-3 text-slate-700">${escapeHtml(v.material_name || '-')}</td>
-            <td class="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/40">${escapeHtml(v.unit || 'm³')}</td>
-            <td class="px-4 py-3 text-center font-mono text-slate-600">${v.active_days || 1}</td>
-            <td class="px-4 py-3 text-center font-mono font-semibold text-slate-900">${v.trips}</td>
-            <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${Number(v.volume).toFixed(2)} ${escapeHtml(v.unit || 'm³')}</td>
-            <td class="px-4 py-3 text-right font-mono text-slate-600">${Number(v.avg_volume).toFixed(2)}</td>
-          </tr>
-        `).join('');
-      }
-    }
+    AppState.cumVehiclesList = data.byVehicle || [];
+    renderCumulativeVehicleTable();
 
   } catch (err) {
     console.error('Lỗi tải báo cáo lũy kế:', err);
     showToast('Lỗi khi tải dữ liệu báo cáo lũy kế', 'error');
   }
+}
+
+function renderCumulativeVehicleTable() {
+  const vehTbody = document.getElementById('cumVehicleTableBody');
+  const vehCountEl = document.getElementById('cumVehicleTableCount');
+  if (!vehTbody) return;
+
+  let list = AppState.cumVehiclesList || [];
+  if (AppState.filterCumLowVolOnly) {
+    list = list.filter(v => Number(v.avg_volume) < 2 || (v.low_volume_trips && Number(v.low_volume_trips) > 0));
+  }
+
+  if (vehCountEl) {
+    if (AppState.filterCumLowVolOnly) {
+      vehCountEl.innerHTML = `<span class="text-red-600 font-bold">Lọc: ${list.length} xe &lt; 2 m³</span> / Tổng: ${(AppState.cumVehiclesList || []).length} xe`;
+    } else {
+      vehCountEl.textContent = `${list.length} xe`;
+    }
+  }
+
+  if (list.length === 0) {
+    if (AppState.filterCumLowVolOnly) {
+      vehTbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-emerald-600 font-bold">✓ Không có phương tiện nào có chuyến &lt; 2 m³ cần sửa trong giai đoạn!</td></tr>`;
+    } else {
+      vehTbody.innerHTML = `<tr><td colspan="10" class="text-center py-6 text-slate-400">Không có dữ liệu phương tiện trong giai đoạn</td></tr>`;
+    }
+    return;
+  }
+
+  vehTbody.innerHTML = list.map((v, idx) => {
+    const isLowVol = Number(v.avg_volume) < 2 || (v.low_volume_trips && Number(v.low_volume_trips) > 0);
+    const rowBg = isLowVol 
+      ? 'bg-amber-50/80 hover:bg-amber-100/80 border-l-4 border-l-red-500 font-medium' 
+      : 'hover:bg-slate-50 transition';
+
+    const avgVolHtml = isLowVol
+      ? `<div class="font-bold text-red-600 flex items-center justify-end gap-1">
+          <span class="text-xs">⚠️</span>
+          <span>${Number(v.avg_volume).toFixed(2)}</span>
+         </div>
+         <span class="text-[10px] text-red-600 font-semibold block">${v.low_volume_trips ? v.low_volume_trips + ' chuyến &lt; 2m³' : 'Chưa điều chỉnh'}</span>`
+      : `<span class="font-mono text-slate-700">${Number(v.avg_volume).toFixed(2)}</span>`;
+
+    return `
+      <tr class="${rowBg}">
+        <td class="px-4 py-3 text-center font-mono text-slate-500">${idx + 1}</td>
+        <td class="px-4 py-3 font-mono font-bold text-blue-900">${escapeHtml(v.plate_number)}</td>
+        <td class="px-4 py-3 font-medium text-slate-800">${escapeHtml(v.supplier_name || '-')}</td>
+        <td class="px-4 py-3 text-slate-600">${escapeHtml(v.project_name || '-')}</td>
+        <td class="px-4 py-3 text-slate-700">${escapeHtml(v.material_name || '-')}</td>
+        <td class="px-4 py-3 text-center font-bold text-blue-700 bg-blue-50/40">${escapeHtml(v.unit || 'm³')}</td>
+        <td class="px-4 py-3 text-center font-mono text-slate-600">${v.active_days || 1}</td>
+        <td class="px-4 py-3 text-center font-mono font-semibold text-slate-900">${v.trips}</td>
+        <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700">${Number(v.volume).toFixed(2)} ${escapeHtml(v.unit || 'm³')}</td>
+        <td class="px-4 py-3 text-right font-mono">${avgVolHtml}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function toggleCumLowVolFilter() {
+  AppState.filterCumLowVolOnly = !AppState.filterCumLowVolOnly;
+  const btnText = document.getElementById('btnCumFilterLowVolText');
+  const btnVehText = document.getElementById('btnCumFilterVehLowVolText');
+  const label = AppState.filterCumLowVolOnly ? 'Hiện Lại Toàn Bộ Xe' : 'Lọc Xe < 2 m³ (Bảng 4)';
+  if (btnText) btnText.textContent = label;
+  if (btnVehText) btnVehText.textContent = AppState.filterCumLowVolOnly ? 'Hiện Toàn Bộ Xe' : 'Chỉ xe có chuyến < 2m³';
+  renderCumulativeVehicleTable();
 }
 
 function exportCumulativeExcel() {
@@ -3213,6 +3406,8 @@ window.openCheckOutModal = openCheckOutModal;
 window.closeCheckOutModal = closeCheckOutModal;
 window.submitCheckOut = submitCheckOut;
 window.handleDailyFilterChange = handleDailyFilterChange;
+window.toggleDailyLowVolFilter = toggleDailyLowVolFilter;
+window.renderDailyTicketsTable = renderDailyTicketsTable;
 window.openEditTicketModalById = openEditTicketModalById;
 window.closeEditTicketModal = closeEditTicketModal;
 window.saveEditTicket = saveEditTicket;
@@ -3220,6 +3415,8 @@ window.printDailyReport = printDailyReport;
 window.exportDailyExcel = exportDailyExcel;
 window.handleCumulativeFilterChange = handleCumulativeFilterChange;
 window.loadCumulativeReport = loadCumulativeReport;
+window.toggleCumLowVolFilter = toggleCumLowVolFilter;
+window.renderCumulativeVehicleTable = renderCumulativeVehicleTable;
 window.setCumPreset = setCumPreset;
 window.populateCumulativeVehicleDropdown = populateCumulativeVehicleDropdown;
 window.exportCumulativeExcel = exportCumulativeExcel;

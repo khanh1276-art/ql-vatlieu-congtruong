@@ -1954,7 +1954,8 @@ const server = http.createServer(async (req, res) => {
           COUNT(*) as total_trips,
           COUNT(DISTINCT supplier_name) as total_suppliers,
           COUNT(DISTINCT plate_number) as total_vehicles,
-          COUNT(DISTINCT project_name) as total_projects
+          COUNT(DISTINCT project_name) as total_projects,
+          SUM(CASE WHEN actual_volume < 2 THEN 1 ELSE 0 END) as low_volume_count
         FROM tickets
         WHERE date(time_in) = date(?) AND status != 'CANCELLED' ${extraFilter}
       `).get(...params);
@@ -2072,7 +2073,8 @@ const server = http.createServer(async (req, res) => {
           COUNT(DISTINCT supplier_name) as supplier_count,
           COUNT(DISTINCT plate_number) as vehicle_count,
           COUNT(DISTINCT project_name) as project_count,
-          COUNT(DISTINCT date(time_in)) as active_days
+          COUNT(DISTINCT date(time_in)) as active_days,
+          SUM(CASE WHEN actual_volume < 2 THEN 1 ELSE 0 END) as low_volume_count
         FROM tickets
         WHERE 1=1 ${filterSql}
       `).get(...baseParams);
@@ -2151,6 +2153,7 @@ const server = http.createServer(async (req, res) => {
           COUNT(*) as trips,
           ROUND(SUM(actual_volume), 2) as volume,
           ROUND(AVG(actual_volume), 2) as avg_volume,
+          SUM(CASE WHEN actual_volume < 2 THEN 1 ELSE 0 END) as low_volume_trips,
           standard_volume
         FROM tickets
         WHERE 1=1 ${filterSql}
@@ -2305,7 +2308,8 @@ const server = http.createServer(async (req, res) => {
             unit,
             COUNT(*) as trips,
             ROUND(SUM(actual_volume), 2) as volume,
-            ROUND(AVG(actual_volume), 2) as avg_volume
+            ROUND(AVG(actual_volume), 2) as avg_volume,
+            SUM(CASE WHEN actual_volume < 2 THEN 1 ELSE 0 END) as low_volume_trips
           FROM tickets
           WHERE ${filterSql}
           GROUP BY date(time_in), plate_number, material_name, unit, supplier_name, project_name
@@ -2322,7 +2326,8 @@ const server = http.createServer(async (req, res) => {
             COUNT(DISTINCT date(time_in)) as active_days,
             COUNT(*) as trips,
             ROUND(SUM(actual_volume), 2) as volume,
-            ROUND(AVG(actual_volume), 2) as avg_volume
+            ROUND(AVG(actual_volume), 2) as avg_volume,
+            SUM(CASE WHEN actual_volume < 2 THEN 1 ELSE 0 END) as low_volume_trips
           FROM tickets
           WHERE ${filterSql}
           GROUP BY plate_number, material_name, unit, supplier_name, project_name
@@ -2707,7 +2712,16 @@ function buildDailyExcelXml(date, summary, tickets) {
     const dim = (t.length > 0 && t.width > 0 && t.height > 0)
       ? `${t.length} x ${t.width} x ${t.height}`
       : 'Theo xe';
-    const adjustText = t.is_manual_adjusted ? `Có (${t.adjustment_reason || 'Chở vơi/ngọn'})` : 'Đúng quy chuẩn';
+    const isLow = Number(t.actual_volume) < 2;
+    const adjustText = t.is_manual_adjusted 
+      ? `Có (${t.adjustment_reason || 'Chở vơi/ngọn'})` 
+      : (isLow ? '⚠️ CHƯA ĐIỀU CHỈNH' : 'Đúng quy chuẩn');
+    let noteText = t.notes || '';
+    if (isLow) {
+      noteText = `[⚠️ CẢNH BÁO: KL < 2m³ CHƯA NGHIỆM THU/ĐIỀU CHỈNH] ${noteText}`.trim();
+    }
+    const volStyle = isLow ? 'cLowVolNumber' : 'cNumberBold';
+    const noteStyle = isLow ? ' ss:StyleID="cLowVolNote"' : '';
 
     rows += `
     <Row>
@@ -2722,9 +2736,9 @@ function buildDailyExcelXml(date, summary, tickets) {
       <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(t.time_out || 'Đang trong bãi')}</Data></Cell>
       <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(dim)}</Data></Cell>
       <Cell ss:StyleID="cNumber"><Data ss:Type="Number">${t.standard_volume}</Data></Cell>
-      <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${t.actual_volume}</Data></Cell>
+      <Cell ss:StyleID="${volStyle}"><Data ss:Type="Number">${t.actual_volume}</Data></Cell>
       <Cell><Data ss:Type="String">${escapeXml(adjustText)}</Data></Cell>
-      <Cell><Data ss:Type="String">${escapeXml(t.notes || '')}</Data></Cell>
+      <Cell${noteStyle}><Data ss:Type="String">${escapeXml(noteText)}</Data></Cell>
     </Row>`;
   }
 
@@ -2784,6 +2798,19 @@ function buildDailyExcelXml(date, summary, tickets) {
       <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#166534"/>
       <NumberFormat ss:Format="#,##0.00"/>
       <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cLowVolNumber">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#dc2626"/>
+      <Interior ss:Color="#fee2e2" ss:Pattern="Solid"/>
+      <NumberFormat ss:Format="#,##0.00"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#fca5a5"/></Borders>
+    </Style>
+    <Style ss:ID="cLowVolNote">
+      <Alignment ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="10" ss:Bold="1" ss:Color="#dc2626"/>
+      <Interior ss:Color="#fee2e2" ss:Pattern="Solid"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#fca5a5"/></Borders>
     </Style>
   </Styles>
   <Worksheet ss:Name="Nhat_Trinh_Ngay">
@@ -3083,6 +3110,19 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
       <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#047857"/>
       <NumberFormat ss:Format="#,##0.00"/>
       <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#e2e8f0"/></Borders>
+    </Style>
+    <Style ss:ID="cLowVolNumber">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="11" ss:Bold="1" ss:Color="#dc2626"/>
+      <Interior ss:Color="#fee2e2" ss:Pattern="Solid"/>
+      <NumberFormat ss:Format="#,##0.00"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#fca5a5"/></Borders>
+    </Style>
+    <Style ss:ID="cLowVolNote">
+      <Alignment ss:Vertical="Center"/>
+      <Font ss:FontName="Segoe UI" ss:Size="10" ss:Bold="1" ss:Color="#dc2626"/>
+      <Interior ss:Color="#fee2e2" ss:Pattern="Solid"/>
+      <Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#fca5a5"/></Borders>
     </Style>`;
 
   let worksheets = '';
@@ -3098,8 +3138,13 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
       const trips = Number(item.trips) || 0;
       const vol = Number(item.volume) || 0;
       const avg = Number(item.avg_volume) || (trips > 0 ? Math.round((vol / trips) * 100) / 100 : 0);
+      const isLow = avg < 2 || (item.low_volume_trips && Number(item.low_volume_trips) > 0);
       totTrips += trips;
       totVol += vol;
+
+      const avgStyle = isLow ? 'cLowVolNumber' : 'cNumber';
+      const noteText = isLow ? '⚠️ CẢNH BÁO: TB < 2m³ (Chưa điều chỉnh/nghiệm thu)' : 'Đúng quy chuẩn';
+      const noteStyle = isLow ? ' ss:StyleID="cLowVolNote"' : '';
 
       rows += `
       <Row>
@@ -3112,7 +3157,8 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
         <Cell ss:StyleID="cCenter"><Data ss:Type="String">${escapeXml(item.unit || 'm³')}</Data></Cell>
         <Cell ss:StyleID="cInt"><Data ss:Type="Number">${trips}</Data></Cell>
         <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${vol}</Data></Cell>
-        <Cell ss:StyleID="cNumber"><Data ss:Type="Number">${avg}</Data></Cell>
+        <Cell ss:StyleID="${avgStyle}"><Data ss:Type="Number">${avg}</Data></Cell>
+        <Cell${noteStyle}><Data ss:Type="String">${escapeXml(noteText)}</Data></Cell>
       </Row>`;
     }
 
@@ -3131,12 +3177,13 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
       <Column ss:Width="85"/>
       <Column ss:Width="135"/>
       <Column ss:Width="110"/>
+      <Column ss:Width="260"/>
 
       <Row ss:Height="30">
-        <Cell ss:MergeAcross="9" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO CHI TIẾT SẢN LƯỢNG THEO TỪNG NGÀY VÀ TỪNG XE</Data></Cell>
+        <Cell ss:MergeAcross="10" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO CHI TIẾT SẢN LƯỢNG THEO TỪNG NGÀY VÀ TỪNG XE</Data></Cell>
       </Row>
       <Row ss:Height="20">
-        <Cell ss:MergeAcross="9" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)}</Data></Cell>
+        <Cell ss:MergeAcross="10" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)}</Data></Cell>
       </Row>
       <Row/>
       <Row ss:Height="26">
@@ -3150,6 +3197,7 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
         <Cell ss:StyleID="Header"><Data ss:Type="String">Số Chuyến</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">Khối Lượng Trong Ngày</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">TB / Chuyến</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Ghi Chú / Cảnh Báo</Data></Cell>
       </Row>
       ${rows}
       <Row ss:Height="24" ss:StyleID="TotalRow">
@@ -3157,6 +3205,7 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
         <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${totTrips}</Data></Cell>
         <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${Math.round(totVol * 100) / 100}</Data></Cell>
         <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${finalAvg}</Data></Cell>
+        <Cell ss:StyleID="TotalRow"><Data ss:Type="String"></Data></Cell>
       </Row>
     </Table>
   </Worksheet>`;
@@ -3174,8 +3223,13 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
       const trips = Number(item.trips) || 0;
       const vol = Number(item.volume) || 0;
       const avg = Number(item.avg_volume) || (trips > 0 ? Math.round((vol / trips) * 100) / 100 : 0);
+      const isLow = avg < 2 || (item.low_volume_trips && Number(item.low_volume_trips) > 0);
       totTrips += trips;
       totVol += vol;
+
+      const avgStyle = isLow ? 'cLowVolNumber' : 'cNumber';
+      const noteText = isLow ? '⚠️ CẢNH BÁO: TB < 2m³ (Chưa điều chỉnh/nghiệm thu)' : 'Đúng quy chuẩn';
+      const noteStyle = isLow ? ' ss:StyleID="cLowVolNote"' : '';
 
       rows += `
       <Row>
@@ -3188,7 +3242,8 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
         <Cell ss:StyleID="cInt"><Data ss:Type="Number">${days}</Data></Cell>
         <Cell ss:StyleID="cInt"><Data ss:Type="Number">${trips}</Data></Cell>
         <Cell ss:StyleID="cNumberBold"><Data ss:Type="Number">${vol}</Data></Cell>
-        <Cell ss:StyleID="cNumber"><Data ss:Type="Number">${avg}</Data></Cell>
+        <Cell ss:StyleID="${avgStyle}"><Data ss:Type="Number">${avg}</Data></Cell>
+        <Cell${noteStyle}><Data ss:Type="String">${escapeXml(noteText)}</Data></Cell>
       </Row>`;
     }
 
@@ -3207,12 +3262,13 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
       <Column ss:Width="95"/>
       <Column ss:Width="140"/>
       <Column ss:Width="110"/>
+      <Column ss:Width="260"/>
 
       <Row ss:Height="30">
-        <Cell ss:MergeAcross="9" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO TỔNG HỢP SẢN LƯỢNG THEO PHƯƠNG TIỆN (BIỂN SỐ XE)</Data></Cell>
+        <Cell ss:MergeAcross="10" ss:StyleID="Title"><Data ss:Type="String">BÁO CÁO TỔNG HỢP SẢN LƯỢNG THEO PHƯƠNG TIỆN (BIỂN SỐ XE)</Data></Cell>
       </Row>
       <Row ss:Height="20">
-        <Cell ss:MergeAcross="9" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)} | Tổng số xe: ${vehicleSummary.length}</Data></Cell>
+        <Cell ss:MergeAcross="10" ss:StyleID="SubTitle"><Data ss:Type="String">${escapeXml(filterText)} | Tổng số xe: ${vehicleSummary.length}</Data></Cell>
       </Row>
       <Row/>
       <Row ss:Height="26">
@@ -3226,6 +3282,7 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
         <Cell ss:StyleID="Header"><Data ss:Type="String">Tổng Số Chuyến</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">Tổng Khối Lượng Lũy Kế</Data></Cell>
         <Cell ss:StyleID="Header"><Data ss:Type="String">TB / Chuyến</Data></Cell>
+        <Cell ss:StyleID="Header"><Data ss:Type="String">Ghi Chú / Cảnh Báo</Data></Cell>
       </Row>
       ${rows}
       <Row ss:Height="24" ss:StyleID="TotalRow">
@@ -3233,6 +3290,7 @@ function buildCumulativeExcelXml(optsOrStartDate, endDateArg, summaryArg, dataAr
         <Cell ss:StyleID="TotalRowCenter"><Data ss:Type="Number">${totTrips}</Data></Cell>
         <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${Math.round(totVol * 100) / 100}</Data></Cell>
         <Cell ss:StyleID="TotalRowNumber"><Data ss:Type="Number">${finalAvg}</Data></Cell>
+        <Cell ss:StyleID="TotalRow"><Data ss:Type="String"></Data></Cell>
       </Row>
     </Table>
   </Worksheet>`;

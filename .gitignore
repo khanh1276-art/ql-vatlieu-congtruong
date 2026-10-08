@@ -11,4 +11,5 @@ data/*backup*.db
 test_*.js
 tests/
 scratch_*.js
+*.sqlite*
 

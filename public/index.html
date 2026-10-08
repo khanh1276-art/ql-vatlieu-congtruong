@@ -409,6 +409,10 @@
                     <input type="text" id="checkin_adjust_reason" placeholder="VD: Trừ hao hụt 1.5 Tấn, thiếu 2m cống..."
                       class="w-full text-xs px-2.5 py-1.5 bg-white border border-amber-300 rounded focus:border-amber-500 focus:outline-none">
                   </div>
+                  <div id="checkinVolWarning" class="p-2 bg-red-100/90 border border-red-300 rounded-lg text-[11px] text-red-800 font-semibold flex items-center gap-1.5 hidden">
+                    <span>⚠️</span>
+                    <span>Chú ý: Khối lượng &lt; 2 m³ (thấp bất thường với xe công trường). Vui lòng kiểm tra lại!</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -629,23 +633,56 @@
         </div>
       </div>
 
+      <!-- CẢNH BÁO XE CÓ KHỐI LƯỢNG < 2 M3 CHƯA ĐIỀU CHỈNH -->
+      <div id="dailyLowVolBanner" class="p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/15 to-orange-500/10 border-2 border-amber-500/80 rounded-2xl shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-3 hidden">
+        <div class="flex items-start gap-3">
+          <div class="p-2.5 bg-amber-500 text-white rounded-xl shadow-sm text-xl flex-shrink-0">
+            ⚠️
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h4 class="text-sm font-bold text-amber-900 uppercase tracking-wide">
+                Cảnh Báo: Phát Hiện <span id="dailyLowVolCount" class="font-extrabold text-red-600 font-mono text-base underline">0</span> Chuyến Xe Có Khối Lượng &lt; 2 m³
+              </h4>
+              <span class="px-2 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase tracking-wider animate-pulse">Chưa Cập Nhật</span>
+            </div>
+            <p class="text-xs text-amber-800 mt-0.5">
+              Các chuyến xe này chưa được cập nhật kích thước / nghiệm thu thực tế (đang để khối lượng tạm tính &lt; 2 m³). <b>Yêu cầu người nhập liệu kiểm tra phiếu giao nhận và cập nhật lại số khối!</b>
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 w-full md:w-auto flex-shrink-0">
+          <button id="btnDailyFilterLowVol" onclick="toggleDailyLowVolFilter()" class="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow flex items-center justify-center gap-1.5 transition">
+            <span>🔍</span>
+            <span id="btnDailyFilterLowVolText">Chỉ Hiện Xe &lt; 2 m³ Cần Sửa</span>
+          </button>
+        </div>
+      </div>
+
       <!-- Thẻ tóm tắt ngày -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div class="bg-blue-50/70 p-4 rounded-xl border border-blue-200">
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
+        <div class="bg-blue-50/70 p-3.5 md:p-4 rounded-xl border border-blue-200">
           <span class="text-xs font-semibold text-blue-700 block">Tổng Chuyến Trong Ngày</span>
           <span id="dailyTotalTrips" class="text-2xl font-bold font-mono text-blue-950">0</span>
         </div>
-        <div class="bg-emerald-50/70 p-4 rounded-xl border border-emerald-200">
+        <div class="bg-emerald-50/70 p-3.5 md:p-4 rounded-xl border border-emerald-200">
           <span class="text-xs font-semibold text-emerald-700 block">Số Dự Án Hoạt Động</span>
           <span id="dailyProjectsCount" class="text-2xl font-bold font-mono text-emerald-950">0</span>
         </div>
-        <div class="bg-amber-50/70 p-4 rounded-xl border border-amber-200">
+        <div class="bg-amber-50/70 p-3.5 md:p-4 rounded-xl border border-amber-200">
           <span class="text-xs font-semibold text-amber-700 block">Số Nhà Cung Cấp</span>
           <span id="dailySuppliersCount" class="text-2xl font-bold font-mono text-amber-950">0</span>
         </div>
-        <div class="bg-purple-50/70 p-4 rounded-xl border border-purple-200">
+        <div class="bg-purple-50/70 p-3.5 md:p-4 rounded-xl border border-purple-200">
           <span class="text-xs font-semibold text-purple-700 block">Số Lượng Xe Vận Chuyển</span>
           <span id="dailyVehiclesCount" class="text-2xl font-bold font-mono text-purple-950">0</span>
+        </div>
+        <div id="dailyLowVolCard" class="bg-red-50/80 p-3.5 md:p-4 rounded-xl border border-red-300 transition cursor-pointer hover:bg-red-100/80" onclick="toggleDailyLowVolFilter()" title="Nhấn để lọc các xe có khối lượng < 2 m³">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-red-700 block">Chưa Điều Chỉnh (&lt; 2m³)</span>
+            <span class="text-xs text-red-500">⚠️</span>
+          </div>
+          <span id="dailyLowVolCardCount" class="text-2xl font-black font-mono text-red-700">0</span>
         </div>
       </div>
 
@@ -802,38 +839,75 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div class="bg-blue-600 text-white p-5 rounded-xl shadow-md">
-          <span class="text-xs uppercase tracking-wider text-blue-100 block font-semibold">TỔNG SỐ LƯỢT XE LŨY KẾ</span>
+      <!-- CẢNH BÁO XE CÓ KHỐI LƯỢNG < 2 M3 CHƯA ĐIỀU CHỈNH TRONG KỲ LŨY KẾ -->
+      <div id="cumLowVolBanner" class="p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/15 to-orange-500/10 border-2 border-amber-500/80 rounded-2xl shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-3 hidden">
+        <div class="flex items-start gap-3">
+          <div class="p-2.5 bg-amber-500 text-white rounded-xl shadow-sm text-xl flex-shrink-0">
+            ⚠️
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h4 class="text-sm font-bold text-amber-900 uppercase tracking-wide">
+                Cảnh Báo Lũy Kế: Có <span id="cumLowVolCount" class="font-extrabold text-red-600 font-mono text-base underline">0</span> Chuyến Xe Có Khối Lượng &lt; 2 m³
+              </h4>
+              <span class="px-2 py-0.5 bg-red-100 text-red-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Cần Điều Chỉnh</span>
+            </div>
+            <p class="text-xs text-amber-800 mt-0.5">
+              Phát hiện các chuyến xe trong kỳ này chưa được cập nhật số khối thực tế (đang để giá trị mặc định &lt; 2 m³). Người nhập liệu cần rà soát lại trước khi chốt nghiệm thu / xuất bảng kê!
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 w-full md:w-auto flex-shrink-0">
+          <button id="btnCumFilterLowVol" onclick="toggleCumLowVolFilter()" class="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow flex items-center justify-center gap-1.5 transition">
+            <span>🚚</span>
+            <span id="btnCumFilterLowVolText">Lọc Xe &lt; 2 m³ (Bảng 4)</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
+        <div class="bg-blue-600 text-white p-4 md:p-5 rounded-xl shadow-md">
+          <span class="text-xs uppercase tracking-wider text-blue-100 block font-semibold">TỔNG SỐ LƯỢT XE</span>
           <div class="flex items-baseline space-x-1 mt-1">
-            <span id="cumTotalTrips" class="text-3xl font-extrabold font-mono">0</span>
+            <span id="cumTotalTrips" class="text-2xl md:text-3xl font-extrabold font-mono">0</span>
             <span class="text-xs font-semibold text-blue-200">chuyến</span>
           </div>
           <p class="text-[11px] text-blue-100 mt-1">Toàn bộ lượt đã hoàn thành</p>
         </div>
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <span class="text-xs uppercase tracking-wider text-slate-500 block font-semibold">SỐ DỰ ÁN PHÁT SINH</span>
+        <div class="bg-white p-4 md:p-5 rounded-xl border border-slate-200 shadow-sm">
+          <span class="text-xs uppercase tracking-wider text-slate-500 block font-semibold">SỐ DỰ ÁN</span>
           <div class="flex items-baseline space-x-1 mt-1">
-            <span id="cumProjectCount" class="text-3xl font-extrabold font-mono text-emerald-600">0</span>
+            <span id="cumProjectCount" class="text-2xl md:text-3xl font-extrabold font-mono text-emerald-600">0</span>
             <span class="text-xs font-semibold text-emerald-700">dự án</span>
           </div>
           <p class="text-[11px] text-slate-400 mt-1">Có giao nhận vật liệu</p>
         </div>
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+        <div class="bg-white p-4 md:p-5 rounded-xl border border-slate-200 shadow-sm">
           <span class="text-xs uppercase tracking-wider text-slate-500 block font-semibold">SỐ NHÀ CUNG CẤP</span>
           <div class="flex items-baseline space-x-1 mt-1">
-            <span id="cumSupplierCount" class="text-3xl font-extrabold font-mono text-amber-600">0</span>
+            <span id="cumSupplierCount" class="text-2xl md:text-3xl font-extrabold font-mono text-amber-600">0</span>
             <span class="text-xs font-semibold text-amber-700">đơn vị</span>
           </div>
           <p class="text-[11px] text-slate-400 mt-1">Đã cung ứng vật liệu</p>
         </div>
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <span class="text-xs uppercase tracking-wider text-slate-500 block font-semibold">SỐ NGÀY GIAO HÀNG</span>
+        <div class="bg-white p-4 md:p-5 rounded-xl border border-slate-200 shadow-sm">
+          <span class="text-xs uppercase tracking-wider text-slate-500 block font-semibold">SỐ NGÀY GIAO</span>
           <div class="flex items-baseline space-x-1 mt-1">
-            <span id="cumActiveDays" class="text-3xl font-extrabold font-mono text-purple-600">0</span>
+            <span id="cumActiveDays" class="text-2xl md:text-3xl font-extrabold font-mono text-purple-600">0</span>
             <span class="text-xs font-semibold text-purple-700">ngày</span>
           </div>
           <p class="text-[11px] text-slate-400 mt-1">Có phát sinh nhập kho</p>
+        </div>
+        <div id="cumLowVolCard" class="bg-red-50/80 p-4 md:p-5 rounded-xl border border-red-300 shadow-sm cursor-pointer hover:bg-red-100/80 transition" onclick="toggleCumLowVolFilter()" title="Nhấn để lọc các xe có khối lượng < 2 m³ ở Bảng 4">
+          <span class="text-xs uppercase tracking-wider text-red-700 block font-bold flex items-center justify-between">
+            <span>CHƯA ĐIỀU CHỈNH</span>
+            <span>⚠️</span>
+          </span>
+          <div class="flex items-baseline space-x-1 mt-1">
+            <span id="cumLowVolCardCount" class="text-2xl md:text-3xl font-black font-mono text-red-700">0</span>
+            <span class="text-xs font-semibold text-red-600">chuyến</span>
+          </div>
+          <p class="text-[11px] text-red-600 mt-1 font-medium">&lt; 2 m³ cần cập nhật</p>
         </div>
       </div>
 
@@ -918,7 +992,13 @@
             </h3>
             <p class="text-xs text-slate-500">Chi tiết số chuyến, số ngày chạy và tổng khối lượng lũy kế của từng xe</p>
           </div>
-          <span id="cumVehicleTableCount" class="text-xs font-semibold px-2.5 py-1 bg-slate-100 text-slate-700 rounded-full font-mono self-start sm:self-auto">0 xe</span>
+          <div class="flex items-center gap-2 self-start sm:self-auto">
+            <button id="btnCumFilterVehLowVol" onclick="toggleCumLowVolFilter()" class="text-xs px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg font-semibold flex items-center gap-1 shadow-sm transition">
+              <span>⚠️</span>
+              <span id="btnCumFilterVehLowVolText">Chỉ xe có chuyến &lt; 2m³</span>
+            </button>
+            <span id="cumVehicleTableCount" class="text-xs font-semibold px-2.5 py-1 bg-slate-100 text-slate-700 rounded-full font-mono">0 xe</span>
+          </div>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs">
@@ -1544,6 +1624,10 @@
             <input type="text" id="coutAdjustmentReason" placeholder="Ghi rõ lý do nếu sai khác so với quy chuẩn"
               class="w-full text-xs px-2.5 py-1.5 bg-white border border-blue-200 rounded">
           </div>
+          <div id="coutVolWarning" class="mt-2 p-2.5 bg-red-50 border border-red-300 rounded-lg flex items-start gap-2 text-xs text-red-800 hidden">
+            <span class="text-sm">⚠️</span>
+            <span><b>Cảnh báo:</b> Khối lượng &lt; 2 m³ (thấp bất thường/chưa điều chỉnh). Vui lòng kiểm tra lại trước khi xác nhận xe ra!</span>
+          </div>
         </div>
 
         <div>
@@ -1595,7 +1679,18 @@
           </div>
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Khối Lượng Nghiệm Thu</label>
-            <input type="number" step="0.01" min="0.1" id="edit_actual_volume" required class="w-full text-xs font-mono font-bold px-3 py-2 border rounded-lg text-emerald-700">
+            <input type="number" step="0.01" min="0" id="edit_actual_volume" required class="w-full text-xs font-mono font-bold px-3 py-2 border rounded-lg text-emerald-700">
+          </div>
+        </div>
+
+        <!-- CẢNH BÁO NẾU KHỐI LƯỢNG < 2 M3 -->
+        <div id="editVolWarning" class="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2.5 text-xs text-red-800 hidden">
+          <span class="text-base flex-shrink-0">⚠️</span>
+          <div>
+            <p class="font-bold">Khối lượng đang &lt; 2 m³ (Chưa điều chỉnh thực tế)!</p>
+            <p class="text-[11px] text-red-700 mt-0.5">
+              Khối lượng &lt; 2 m³ là giá trị tạm tính hoặc chưa được điều chỉnh theo kích thước thùng xe. Vui lòng kiểm tra kỹ phiếu giao nhận và nhập lại số khối thực nhận đúng quy chuẩn!
+            </p>
           </div>
         </div>
 
