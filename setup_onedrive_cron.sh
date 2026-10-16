@@ -9,6 +9,7 @@ echo "=========================================================="
 # 1. Tự động phát hiện thư mục mã nguồn webapp
 APP_DIR=""
 for candidate in \
+  "/var/www/kho-vatlieu" \
   "/var/www/ql-vatlieu-congtruong" \
   "/var/www/kho.khanhtran.io.vn" \
   "/var/www/html" \
