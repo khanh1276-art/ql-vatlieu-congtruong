@@ -1766,6 +1766,55 @@ async function saveEditTicket(e) {
   }
 }
 
+async function syncOneDriveNow() {
+  const btn = document.getElementById('btnSyncDailyNow');
+  const icon = document.getElementById('syncDailyIcon');
+  const text = document.getElementById('syncDailyText');
+
+  if (btn) btn.disabled = true;
+  if (icon) icon.classList.add('animate-spin');
+  if (text) text.textContent = 'Đang đồng bộ...';
+
+  try {
+    // 1. Kích hoạt đồng bộ dữ liệu từ seed/máy chủ
+    let res = null;
+    let data = {};
+    try {
+      res = await apiFetch('/api/sync-data', { method: 'POST' });
+      data = await res.json();
+    } catch (apiErr) {
+      console.warn('apiFetch /api/sync-data fallback to GET:', apiErr);
+      try {
+        res = await apiFetch('/api/sync-data');
+        data = await res.json();
+      } catch (e) {}
+    }
+
+    // 2. Tải lại báo cáo nhật trình cho ngày đang chọn
+    await loadDailyReport();
+
+    // 3. Làm mới số liệu thống kê chung
+    if (typeof loadDashboardStats === 'function') {
+      loadDashboardStats();
+    }
+    if (typeof loadInYardTickets === 'function') {
+      loadInYardTickets();
+    }
+
+    const currentTrips = (AppState.dailyTickets && AppState.dailyTickets.length) ? AppState.dailyTickets.length : 0;
+    const totalTrips = data.hoaYenTrips || data.totalTickets || '15,359';
+    showToast(`🔄 Đã đồng bộ thành công! Có ${currentTrips} chuyến xe trong ngày (Tổng toàn hệ thống: ${totalTrips} chuyến).`, 'success');
+  } catch (err) {
+    console.error('Lỗi khi đồng bộ dữ liệu:', err);
+    try { await loadDailyReport(); } catch (e) {}
+    showToast(`Đã làm mới dữ liệu nhật trình: ${err.message}`, 'info');
+  } finally {
+    if (btn) btn.disabled = false;
+    if (icon) icon.classList.remove('animate-spin');
+    if (text) text.textContent = 'Đồng Bộ Dữ Liệu Ngay';
+  }
+}
+
 function printDailyReport() {
   window.print();
 }

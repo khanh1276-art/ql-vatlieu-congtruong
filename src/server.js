@@ -565,7 +565,19 @@ const server = http.createServer(async (req, res) => {
     // =========================================================================
     // 0. API ĐỒNG BỘ DỮ LIỆU TỪ SEED (SYNC DATA ENDPOINT)
     // =========================================================================
-    if ((pathname === '/api/sync-data' || pathname === '/api/admin/sync-seed') && (method === 'GET' || method === 'POST')) {
+    if ((pathname === '/api/sync-data' || pathname === '/api/admin/sync-seed' || pathname === '/api/sync-onedrive') && (method === 'GET' || method === 'POST')) {
+      const runOneDrive = url.searchParams.get('onedrive') === 'true' || pathname === '/api/sync-onedrive';
+      if (runOneDrive) {
+        const scriptPath = path.join(__dirname, '..', 'scripts', 'sync_onedrive_daily.js');
+        if (fs.existsSync(scriptPath)) {
+          try {
+            const { runDailySync } = require(scriptPath);
+            await runDailySync();
+          } catch (e) {
+            console.warn('[SERVER SYNC] Không thể tải trực tiếp OneDrive:', e.message);
+          }
+        }
+      }
       const result = seedFromInitialJsonIfAvailable();
       const hoaYenProj = db.prepare("SELECT id, name FROM projects WHERE name LIKE '%Hòa Yên%' OR code LIKE '%HOAYEN%' ORDER BY id ASC LIMIT 1").get();
       const hyId = hoaYenProj ? hoaYenProj.id : 4;
